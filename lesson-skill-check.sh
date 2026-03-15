@@ -11,6 +11,9 @@
 #   bash lesson-skill-check.sh --map [lessons_dir]     # スキル⇔教訓トレーサビリティマップ（詳細本文付き）
 #   bash lesson-skill-check.sh --all [lessons_dir]     # 全部実行
 #
+# 複数パスをスキャンする場合（カンマ区切り）:
+#   LESSON_SKILL_SCAN_PATHS="memory/lessons/,memory/dev-lessons.md" bash lesson-skill-check.sh
+#
 # EvoSkill論文（arxiv:2603.02766）の「失敗→スキル発見→改善」を実装。
 
 set -uo pipefail
@@ -33,22 +36,56 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LESSONS_DIR="${LESSON_SKILL_LESSONS_DIR:-${LESSONS_DIR:-$SCRIPT_DIR/examples/lessons}}"
 SKILLS_DIR="${LESSON_SKILL_SKILLS_DIR:-${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}}"
 
-if [ ! -d "$LESSONS_DIR" ]; then
-    echo "教訓ディレクトリが見つかりません: $LESSONS_DIR" >&2
-    exit 0
-fi
+# 複数スキャンパス対応（カンマ区切り）
+# 環境変数 LESSON_SKILL_SCAN_PATHS が設定されていればそちらを使用
+# 未設定なら LESSONS_DIR をそのまま使用
+SCAN_PATHS="${LESSON_SKILL_SCAN_PATHS:-$LESSONS_DIR}"
+
+# スキャンパスからmdファイル一覧を構築
+# 結果を一時ファイルに保存（関数間で共有）
+LESSON_FILES_TMP=$(mktemp)
+trap "rm -f $LESSON_FILES_TMP" EXIT
+
+build_file_list() {
+    > "$LESSON_FILES_TMP"
+    IFS=',' read -ra paths <<< "$SCAN_PATHS"
+    local found=0
+    for p in "${paths[@]}"; do
+        p=$(echo "$p" | xargs)  # trim whitespace
+        if [ -f "$p" ]; then
+            echo "$p" >> "$LESSON_FILES_TMP"
+            found=1
+        elif [ -d "$p" ]; then
+            for f in "$p"/*.md; do
+                [ -f "$f" ] && echo "$f" >> "$LESSON_FILES_TMP"
+            done
+            found=1
+        fi
+    done
+    if [ "$found" = "0" ]; then
+        echo "教訓ファイルが見つかりません: $SCAN_PATHS" >&2
+        exit 0
+    fi
+}
+
+build_file_list
+
+# 教訓ファイル一覧を返す
+get_lesson_files() {
+    cat "$LESSON_FILES_TMP"
+}
 
 # --- 共通関数 ---
 
 # 教訓ファイルからタグを抽出してカウント
 get_tags() {
-    grep -ohE '\[[a-zA-Z0-9_-]+\]' "$LESSONS_DIR"/*.md 2>/dev/null | sort | uniq -c | sort -rn
+    cat $(get_lesson_files) 2>/dev/null | grep -ohE '\[[a-zA-Z0-9_-]+\]' | sort | uniq -c | sort -rn
 }
 
 # 教訓ファイルから特定タグの見出し行を全件抽出
 get_lesson_headings_for_tag() {
     local tag="$1"
-    grep -hF "### " "$LESSONS_DIR"/*.md 2>/dev/null | grep -F "$tag" || true
+    cat $(get_lesson_files) 2>/dev/null | grep -F "### " | grep -F "$tag" || true
 }
 
 # 教訓ファイルから特定タグのセクション全文を抽出（見出し+本文）
@@ -57,7 +94,7 @@ get_lesson_sections_for_tag() {
     local in_section=0
     local section_num=0
 
-    for f in "$LESSONS_DIR"/*.md; do
+    while IFS= read -r f; do
         [ ! -f "$f" ] && continue
         while IFS= read -r line; do
             # ### で始まる見出し行
@@ -82,7 +119,7 @@ get_lesson_sections_for_tag() {
                 echo "      ${line}"
             fi
         done < "$f"
-    done
+    done < <(get_lesson_files)
 }
 
 # スキルのSKILL.mdからチェック項目を抽出（ - [ ] で始まる行）
@@ -241,7 +278,7 @@ do_health() {
 
         # 教訓タグの出現回数
         local tag_count
-        tag_count=$(grep -ohE "\[${tag_name}\]" "$LESSONS_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ')
+        tag_count=$(cat $(get_lesson_files) 2>/dev/null | grep -ohE "\[${tag_name}\]" | wc -l | tr -d ' ')
 
         # チェック項目数
         local item_count

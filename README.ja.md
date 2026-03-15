@@ -75,8 +75,23 @@ description: 過去の教訓に基づくAPI連携チェックリスト
 
 | 変数 | デフォルト | 説明 |
 |------|----------|------|
-| `LESSON_SKILL_LESSONS_DIR` | `./examples/lessons` | 教訓ファイルのパス |
+| `LESSON_SKILL_LESSONS_DIR` | `./examples/lessons` | 教訓ファイルのパス（単一ディレクトリ） |
+| `LESSON_SKILL_SCAN_PATHS` | （`LESSONS_DIR` を使用） | カンマ区切りのスキャンパス（ファイル/ディレクトリ混在可） |
 | `LESSON_SKILL_SKILLS_DIR` | `~/.claude/skills` | スキルディレクトリのパス |
+
+### 複数パスのスキャン
+
+教訓が複数箇所に分散している場合、`LESSON_SKILL_SCAN_PATHS` を使う:
+
+```bash
+# ディレクトリとファイルの両方をスキャン
+LESSON_SKILL_SCAN_PATHS="memory/lessons/,memory/dev-lessons.md" bash lesson-skill-check.sh
+
+# 複数ディレクトリをスキャン
+LESSON_SKILL_SCAN_PATHS="lessons/,retrospectives/,postmortems/" bash lesson-skill-check.sh
+```
+
+各パスはディレクトリ（`*.md` を再帰スキャン）でも単体 `.md` ファイルでもOK。
 
 ## Claude Codeでの使い方
 

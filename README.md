@@ -75,8 +75,23 @@ Skills named `*-checklist` are automatically detected by `--sync` and `--health`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LESSON_SKILL_LESSONS_DIR` | `./examples/lessons` | Path to lesson files |
+| `LESSON_SKILL_LESSONS_DIR` | `./examples/lessons` | Path to lesson files (single directory) |
+| `LESSON_SKILL_SCAN_PATHS` | (uses `LESSONS_DIR`) | Comma-separated paths to scan (files and/or directories) |
 | `LESSON_SKILL_SKILLS_DIR` | `~/.claude/skills` | Path to skill directories |
+
+### Multiple Scan Paths
+
+If your lessons are spread across multiple files/directories, use `LESSON_SKILL_SCAN_PATHS`:
+
+```bash
+# Scan both a directory and a standalone file
+LESSON_SKILL_SCAN_PATHS="memory/lessons/,memory/dev-lessons.md" bash lesson-skill-check.sh
+
+# Scan multiple directories
+LESSON_SKILL_SCAN_PATHS="lessons/,retrospectives/,postmortems/" bash lesson-skill-check.sh
+```
+
+Each path can be a directory (scans `*.md` files) or a single `.md` file.
 
 ## How It Works with Claude Code
 
