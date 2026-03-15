@@ -29,6 +29,35 @@ let lessonsDir = '';
 let skillsDir = '';
 let threshold = 3;
 
+// --- --help ---
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`claude-skill-loop — Turn development lessons into reusable skills
+
+Usage: claude-skill-loop [options] [lessons_dir]
+
+Modes:
+  (default)          Analyze tag patterns and suggest skill candidates
+  --sync             Compare existing skills with lessons, find gaps
+  --health           Check skill freshness and evidence strength
+  --map              Full traceability: which lessons back which skills
+  --all              Run all modes
+
+Options:
+  --dir <path>       Lessons directory (or pass as positional arg)
+  --skills-dir <path> Skills directory (default: ~/.claude/skills)
+  --threshold <n>    Min tag occurrences for skill candidates (default: 3)
+  --json             JSON output
+  --help, -h         Show this help message
+
+Environment:
+  LESSON_SKILL_LESSONS_DIR   Lessons directory
+  LESSON_SKILL_SKILLS_DIR    Skills directory
+  LESSON_SKILL_SCAN_PATHS    Comma-separated scan paths
+  CLAUDE_SKILLS_DIR          Skills directory (fallback)
+`);
+  process.exit(0);
+}
+
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   switch (arg) {
@@ -128,7 +157,7 @@ function readAllLessons() {
  */
 function getTags() {
   const content = readAllLessons();
-  const tagRegex = /\[[a-zA-Z0-9_-]+\]/g;
+  const tagRegex = /\[[a-zA-Z0-9_-]{2,}\]/g;
   const counts = new Map();
 
   let match;
