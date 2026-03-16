@@ -117,6 +117,28 @@ claude-skill-loop --json --all examples/lessons | jq '.analyze.candidates'
 4. **Skills improve** — `--sync` detects new lessons that should update existing skills
 5. **Skills retire** — `--health` flags skills with weak evidence or stale content
 
+### Register as a Slash Command
+
+Create `~/.claude/commands/skill-loop.md` to use `/skill-loop` directly in Claude Code:
+
+```markdown
+# Lesson-Skill Feedback Loop
+
+Run the following command:
+
+\`\`\`bash
+npx claude-skill-loop --all --dir /path/to/your/lessons --skills-dir ~/.claude/skills
+\`\`\`
+```
+
+Then in Claude Code:
+
+```
+/skill-loop          # Run all modes
+/skill-loop analyze  # Tag analysis only
+/skill-loop health   # Health check only
+```
+
 ## Migrating from Bash version
 
 If you used `lesson-skill-check.sh` before, the Node.js version is a drop-in replacement with the same output format:
