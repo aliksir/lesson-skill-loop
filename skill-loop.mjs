@@ -11,6 +11,7 @@
 //   node skill-loop.mjs --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
 //   node skill-loop.mjs --all [lessons_dir]        # 全部実行
 //   node skill-loop.mjs --json [lessons_dir]       # JSON形式出力
+//   node skill-loop.mjs --self-update              # ツール自身を最新版に更新
 //
 // EvoSkill論文（arxiv:2603.02766）の「失敗→スキル発見→改善」を実装。
 
@@ -18,6 +19,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 
 // --- 引数解析 ---
 
@@ -28,6 +30,8 @@ let jsonMode = false;
 let lessonsDir = '';
 let skillsDir = '';
 let threshold = 3;
+const selfUpdateMode = args.includes('--self-update');
+const noVersionCheck = args.includes('--no-version-check');
 
 // --- --help ---
 if (args.includes('--help') || args.includes('-h')) {
@@ -47,6 +51,8 @@ Options:
   --skills-dir <path> Skills directory (default: ~/.claude/skills)
   --threshold <n>    Min tag occurrences for skill candidates (default: 3)
   --json             JSON output
+  --self-update      Update tool itself via npm install -g claude-skill-loop@latest
+  --no-version-check Disable npm version check at end of scan (for CI)
   --help, -h         Show this help message
 
 Environment:
@@ -56,6 +62,94 @@ Environment:
   CLAUDE_SKILLS_DIR          Skills directory (fallback)
 `);
   process.exit(0);
+}
+
+// --- バージョン管理 ---
+
+/** このスクリプトと同ディレクトリの package.json から現在バージョンを取得 */
+function getCurrentVersion() {
+  try {
+    const scriptDir = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(scriptDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      return pkg.version || null;
+    }
+  } catch {}
+  return null;
+}
+
+/** npmレジストリから最新バージョンを取得。失敗時は null を返す */
+function getLatestVersion() {
+  try {
+    return execSync('npm view claude-skill-loop version', {
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return null; // オフライン等
+  }
+}
+
+/**
+ * semver比較。current < latest なら true。
+ * major.minor.patch の数値比較のみ（外部依存なし）
+ */
+function isNewer(current, latest) {
+  const toNums = (v) => v.replace(/^v/, '').split('.').map(Number);
+  const [cM, cm, cp] = toNums(current);
+  const [lM, lm, lp] = toNums(latest);
+  if (lM !== cM) return lM > cM;
+  if (lm !== cm) return lm > cm;
+  return lp > cp;
+}
+
+/** npx 経由で実行されているかどうかを判定 */
+function isNpx() {
+  const execPath = process.env.npm_execpath || '';
+  const argv1 = process.argv[1] || '';
+  if (execPath.includes('npx') || argv1.includes('npx')) return true;
+  // npx はキャッシュ内 (_npx) に展開する
+  if (argv1.includes('_npx')) return true;
+  // グローバルインストール確認
+  try {
+    const out = execSync('npm list -g claude-skill-loop --depth=0', {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return !out.includes('claude-skill-loop');
+  } catch {
+    return false;
+  }
+}
+
+/** --self-update: npm install -g claude-skill-loop@latest を実行 */
+async function selfUpdate() {
+  if (isNpx()) {
+    console.log(`\nℹ️  npxでは自動更新できません。`);
+    console.log(`   npm install -g claude-skill-loop でインストール後に --self-update を使用してください。\n`);
+    process.exit(0);
+  }
+
+  const current = getCurrentVersion() || '(不明)';
+  console.log(`\n🔄 claude-skill-loop を更新中...`);
+  console.log(`  現在: v${current}`);
+  console.log(`  📥 npm install -g claude-skill-loop@latest`);
+
+  try {
+    execSync('npm install -g claude-skill-loop@latest', {
+      encoding: 'utf-8',
+      timeout: 60000,
+      stdio: 'inherit',
+    });
+    const after = getLatestVersion() || '(確認失敗)';
+    console.log(`  ✅ 更新完了: v${after}\n`);
+  } catch (e) {
+    console.error(`  ❌ 更新失敗: ${e.message}`);
+    process.exit(1);
+  }
 }
 
 for (let i = 0; i < args.length; i++) {
@@ -75,6 +169,9 @@ for (let i = 0; i < args.length; i++) {
     case '--threshold':
       threshold = parseInt(args[++i], 10) || 3;
       break;
+    case '--self-update':
+    case '--no-version-check':
+      break; // 上位で処理済み
     default:
       // 位置引数 (--で始まらない) は教訓ディレクトリとして扱う
       if (!arg.startsWith('--')) {
@@ -657,22 +754,48 @@ function doAll() {
 
 // --- エントリポイント ---
 
-if (jsonMode) {
-  let result;
-  switch (mode) {
-    case 'analyze': result = doAnalyze(); break;
-    case 'sync':    result = doSync();    break;
-    case 'health':  result = doHealth();  break;
-    case 'map':     result = doMap();     break;
-    case 'all':     result = doAll();     break;
+async function main() {
+  // --self-update: ツール自身を更新して終了
+  if (selfUpdateMode) {
+    await selfUpdate();
+    return;
   }
-  console.log(JSON.stringify(result, null, 2));
-} else {
-  switch (mode) {
-    case 'analyze': doAnalyze(); break;
-    case 'sync':    doSync();    break;
-    case 'health':  doHealth();  break;
-    case 'map':     doMap();     break;
-    case 'all':     doAll();     break;
+
+  if (jsonMode) {
+    let result;
+    switch (mode) {
+      case 'analyze': result = doAnalyze(); break;
+      case 'sync':    result = doSync();    break;
+      case 'health':  result = doHealth();  break;
+      case 'map':     result = doMap();     break;
+      case 'all':     result = doAll();     break;
+    }
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    switch (mode) {
+      case 'analyze': doAnalyze(); break;
+      case 'sync':    doSync();    break;
+      case 'health':  doHealth();  break;
+      case 'map':     doMap();     break;
+      case 'all':     doAll();     break;
+    }
+
+    // npmバージョンチェック（--no-version-check / --json では非表示）
+    if (!noVersionCheck) {
+      const current = getCurrentVersion();
+      if (current) {
+        const latest = getLatestVersion();
+        if (latest && isNewer(current, latest)) {
+          console.log(`\n💡 新バージョン v${latest} が利用可能です（現在 v${current}）`);
+          console.log(`   更新: npm install -g claude-skill-loop@latest`);
+          console.log(`   または: npx claude-skill-loop@latest [options]`);
+        }
+      }
+    }
   }
 }
+
+main().catch(e => {
+  console.error('Error:', e.message);
+  process.exit(2);
+});
