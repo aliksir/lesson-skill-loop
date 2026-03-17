@@ -18,6 +18,11 @@
 
 set -uo pipefail
 
+# ⚠️ DEPRECATED: このスクリプトは非推奨です。Node.js版を使用してください:
+#   npx claude-skill-loop [options] [lessons_dir]
+echo "⚠️  lesson-skill-check.sh は非推奨です。代わりに 'npx claude-skill-loop' を使用してください。" >&2
+echo "" >&2
+
 # --- 引数解析 ---
 MODE="analyze"
 LESSONS_DIR=""
