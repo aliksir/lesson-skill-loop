@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.1] - 2026-03-22
+
+### Fixed
+- `bin` entry was stripped during `npm publish` because `.mjs` extension is invalid for bin scripts. Renamed `skill-loop.mjs` → `skill-loop.js` (`"type": "module"` ensures ESM behavior is preserved)
+
 ## [2.2.0] - 2026-03-22
 
 ### Fixed
