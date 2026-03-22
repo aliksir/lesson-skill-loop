@@ -15,6 +15,6 @@ jobs:
         with:
           node-version: '20'
       - name: Syntax check
-        run: node --check skill-loop.mjs
+        run: node --check skill-loop.js
       - name: Run tests
         run: npm test

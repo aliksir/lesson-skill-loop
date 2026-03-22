@@ -1,13 +1,13 @@
 {
   "name": "claude-skill-loop",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Turn development lessons into reusable Claude Code skills — analyze patterns, detect gaps, check health",
   "type": "module",
   "bin": {
-    "claude-skill-loop": "./skill-loop.mjs"
+    "claude-skill-loop": "skill-loop.js"
   },
   "files": [
-    "skill-loop.mjs",
+    "skill-loop.js",
     "README.md",
     "README.ja.md",
     "LICENSE",
@@ -31,7 +31,7 @@
   "author": "aliksir",
   "license": "MIT",
   "scripts": {
-    "start": "node skill-loop.mjs",
+    "start": "node skill-loop.js",
     "test": "node --test test/skill-loop.test.mjs"
   }
 }

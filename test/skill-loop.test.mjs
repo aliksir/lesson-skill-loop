@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = join(__dirname, '..', 'skill-loop.mjs');
+const SCRIPT = join(__dirname, '..', 'skill-loop.js');
 const EXAMPLES_LESSONS = join(__dirname, '..', 'examples', 'lessons');
 
 // --- ヘルパー ---

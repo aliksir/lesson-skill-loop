@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// skill-loop.mjs — 教訓⇔スキル フィードバックループ (Node.js v2)
+// skill-loop.js — 教訓⇔スキル フィードバックループ (Node.js v2)
 //
 // 教訓ファイル（lessons/*.md）のタグパターンを分析し、
 // スキル化候補の提案・既存スキルとの差分検出・スキル健全性チェックを行う。
 //
 // 使い方:
-//   node skill-loop.mjs [lessons_dir]              # タグ分析+スキル化候補
-//   node skill-loop.mjs --sync [lessons_dir]       # 既存スキルとの差分分析
-//   node skill-loop.mjs --health [lessons_dir]     # スキル健全性チェック
-//   node skill-loop.mjs --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
-//   node skill-loop.mjs --all [lessons_dir]        # 全部実行
-//   node skill-loop.mjs --json [lessons_dir]       # JSON形式出力
-//   node skill-loop.mjs --self-update              # ツール自身を最新版に更新
+//   node skill-loop.js [lessons_dir]              # タグ分析+スキル化候補
+//   node skill-loop.js --sync [lessons_dir]       # 既存スキルとの差分分析
+//   node skill-loop.js --health [lessons_dir]     # スキル健全性チェック
+//   node skill-loop.js --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
+//   node skill-loop.js --all [lessons_dir]        # 全部実行
+//   node skill-loop.js --json [lessons_dir]       # JSON形式出力
+//   node skill-loop.js --self-update              # ツール自身を最新版に更新
 //
 // EvoSkill論文（arxiv:2603.02766）の「失敗→スキル発見→改善」を実装。
 
