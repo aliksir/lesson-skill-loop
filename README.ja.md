@@ -117,26 +117,31 @@ claude-skill-loop --json --all examples/lessons | jq '.analyze.candidates'
 4. **スキル改善** — `--sync` が新しい教訓を検出したらスキルに項目追加
 5. **スキル廃止** — `--health` が根拠の弱いスキルや古いスキルを警告
 
+### プラグイン構造（commands/）
+
+`commands/` ディレクトリに Claude Code スラッシュコマンドの定義ファイルが含まれています：
+
+| ファイル | スラッシュコマンド | 内容 |
+|---------|----------------|------|
+| `commands/skill-loop.md` | `/skill-loop` | 全モード実行（analyze + sync + health + map） |
+| `commands/skill-loop-health.md` | `/skill-loop-health` | 健全性チェックのみ |
+| `commands/skill-loop-sync.md` | `/skill-loop-sync` | 差分チェックのみ |
+
+任意のファイルを `~/.claude/commands/` にコピーしてパスをカスタマイズしてください。
+
 ## Bash版からの移行
 
-`lesson-skill-check.sh` を使っていた場合、Node.js版は同じ出力フォーマットのドロップイン代替です：
+Bash版（`lesson-skill-check.sh`）は v2.2.0 で削除されました。コマンドの互換性は維持されています：
 
-| Bash版 | Node.js版 |
-|--------|----------|
-| `bash lesson-skill-check.sh [dir]` | `claude-skill-loop [dir]` |
-| `bash lesson-skill-check.sh --sync` | `claude-skill-loop --sync` |
-| `bash lesson-skill-check.sh --health` | `claude-skill-loop --health` |
-| `bash lesson-skill-check.sh --map` | `claude-skill-loop --map` |
-| `bash lesson-skill-check.sh --all` | `claude-skill-loop --all` |
+```bash
+# 旧Bash版
+bash lesson-skill-check.sh --all
 
-Bash版（`lesson-skill-check.sh`）は後方互換のために残してあります。
+# Node.js版（同等）
+claude-skill-loop --all
+```
 
-**v2の新機能:**
-- `--json` フラグ（構造化出力）
-- `--threshold <n>` でスキル化閾値をカスタマイズ
-- `--dir` と `--skills-dir` フラグ
-- クロスプラットフォーム（Windows/macOS/Linux）— Bash不要
-- 外部依存ゼロ（Node.js 18+の標準ライブラリのみ）
+全フラグ（`--sync`, `--health`, `--map`, `--all`）はそのまま使えます。Node.js版では `--json`, `--threshold`, `--dir`, `--skills-dir`, `--self-update` が追加されています。
 
 ## 参考
 
