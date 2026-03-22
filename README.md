@@ -139,26 +139,31 @@ Then in Claude Code:
 /skill-loop health   # Health check only
 ```
 
+### Plugin Structure (commands/)
+
+The `commands/` directory contains ready-to-use Claude Code slash command definitions:
+
+| File | Slash command | Description |
+|------|---------------|-------------|
+| `commands/skill-loop.md` | `/skill-loop` | Run all modes (analyze + sync + health + map) |
+| `commands/skill-loop-health.md` | `/skill-loop-health` | Health check only |
+| `commands/skill-loop-sync.md` | `/skill-loop-sync` | Sync check only |
+
+Copy any of these to `~/.claude/commands/` and customize the paths for your setup.
+
 ## Migrating from Bash version
 
-If you used `lesson-skill-check.sh` before, the Node.js version is a drop-in replacement with the same output format:
+The Bash version (`lesson-skill-check.sh`) was removed in v2.2.0. If you were using it, switch to the Node.js version — the commands are identical:
 
-| Bash | Node.js |
-|------|---------|
-| `bash lesson-skill-check.sh [dir]` | `claude-skill-loop [dir]` |
-| `bash lesson-skill-check.sh --sync` | `claude-skill-loop --sync` |
-| `bash lesson-skill-check.sh --health` | `claude-skill-loop --health` |
-| `bash lesson-skill-check.sh --map` | `claude-skill-loop --map` |
-| `bash lesson-skill-check.sh --all` | `claude-skill-loop --all` |
+```bash
+# Before (Bash)
+bash lesson-skill-check.sh --all
 
-The Bash version (`lesson-skill-check.sh`) is still included for backward compatibility.
+# After (Node.js)
+claude-skill-loop --all
+```
 
-**New in v2:**
-- `--json` flag for structured output
-- `--threshold <n>` to customize the skill proposal threshold
-- `--dir` and `--skills-dir` flags
-- Cross-platform (Windows/macOS/Linux) — no bash required
-- Zero dependencies (Node.js 18+ built-ins only)
+All flags (`--sync`, `--health`, `--map`, `--all`) work the same way. The Node.js version adds `--json`, `--threshold`, `--dir`, `--skills-dir`, and `--self-update`.
 
 ## Inspired By
 

@@ -230,9 +230,13 @@ function buildFileList() {
 
 const LESSON_FILES = buildFileList();
 
-if (LESSON_FILES.length === 0 && !jsonMode) {
-  console.error(`教訓ファイルが見つかりません: ${SCAN_PATHS}`);
-  process.exit(0);
+if (LESSON_FILES.length === 0) {
+  if (jsonMode) {
+    console.log(JSON.stringify({ error: 'No lesson files found', path: SCAN_PATHS }));
+  } else {
+    console.error(`教訓ファイルが見つかりません: ${SCAN_PATHS}`);
+  }
+  process.exit(1);
 }
 
 // --- 共通ユーティリティ ---
@@ -249,18 +253,33 @@ function readAllLessons() {
 }
 
 /**
- * 教訓ファイルからタグを抽出してカウントマップを返す
+ * 教訓ファイルからタグを抽出してカウントマップを返す。
+ * タグは見出し行（### で始まる行）内の `[a-zA-Z0-9_-]{2,}` 形式のみ対象。
+ * Markdownチェックボックス `[x]`, `[ ]` やメタ表現 `[N/A]`, `[x]` 等は除外する。
  * @returns {Map<string, number>} タグ→出現回数
  */
 function getTags() {
-  const content = readAllLessons();
   const tagRegex = /\[[a-zA-Z0-9_-]{2,}\]/g;
+  // チェックボックスやメタ表現として除外するリテラル
+  const EXCLUDED_TAGS = new Set(['[x]', '[X]', '[N/A]', '[na]', '[NA]']);
   const counts = new Map();
 
-  let match;
-  while ((match = tagRegex.exec(content)) !== null) {
-    const tag = match[0];
-    counts.set(tag, (counts.get(tag) || 0) + 1);
+  for (const f of LESSON_FILES) {
+    let content;
+    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; }
+
+    // 見出し行（### で始まる行）のみを対象にする
+    const headingLines = content.split('\n').filter(line => /^###\s/.test(line));
+
+    for (const line of headingLines) {
+      let match;
+      tagRegex.lastIndex = 0;
+      while ((match = tagRegex.exec(line)) !== null) {
+        const tag = match[0];
+        if (EXCLUDED_TAGS.has(tag)) continue;
+        counts.set(tag, (counts.get(tag) || 0) + 1);
+      }
+    }
   }
 
   // 出現回数の降順でソート
