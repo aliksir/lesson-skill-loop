@@ -143,6 +143,20 @@ claude-skill-loop --all
 
 全フラグ（`--sync`, `--health`, `--map`, `--all`）はそのまま使えます。Node.js版では `--json`, `--threshold`, `--dir`, `--skills-dir`, `--self-update` が追加されています。
 
+## Claude Cowork対応
+
+**Claude Cowork**（ブラウザベースの共同作業）でも動作します。Bashが使えない環境では、Claudeの組み込みツール（Read, Glob, Grep）で同等の分析を実行します。
+
+`skills/skill-loop/SKILL.md` に全4モード（analyze/sync/health/map）の手順が記述されています。
+
+**Cowork用インストール**:
+
+```bash
+cp -r skills/skill-loop ~/.claude/skills/
+```
+
+Coworkセッションで `/skill-loop` として利用可能になります。
+
 ## 参考
 
 - [EvoSkill](https://arxiv.org/abs/2603.02766) — マルチエージェントシステムの自動スキル発見

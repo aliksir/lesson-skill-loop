@@ -151,6 +151,22 @@ The `commands/` directory contains ready-to-use Claude Code slash command defini
 
 Copy any of these to `~/.claude/commands/` and customize the paths for your setup.
 
+## Claude Cowork Support
+
+This tool also works in **Claude Cowork** (browser-based collaboration) where Bash is not available.
+
+The `skills/skill-loop/SKILL.md` contains instructions for Claude to perform the same analysis using built-in tools (Read, Glob, Grep) instead of running Node.js. All four modes (analyze, sync, health, map) are supported.
+
+**How to install for Cowork**:
+
+Copy the `skills/skill-loop/` directory to `~/.claude/skills/`:
+
+```bash
+cp -r skills/skill-loop ~/.claude/skills/
+```
+
+Then use `/skill-loop` in Cowork sessions just like in Claude Code.
+
 ## Migrating from Bash version
 
 The Bash version (`lesson-skill-check.sh`) was removed in v2.2.0. If you were using it, switch to the Node.js version — the commands are identical:
