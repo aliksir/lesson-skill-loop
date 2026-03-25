@@ -157,15 +157,55 @@ This tool also works in **Claude Cowork** (browser-based collaboration) where Ba
 
 The `skills/skill-loop/SKILL.md` contains instructions for Claude to perform the same analysis using built-in tools (Read, Glob, Grep) instead of running Node.js. All four modes (analyze, sync, health, map) are supported.
 
-**How to install for Cowork**:
+### Setup for Cowork
 
-Copy the `skills/skill-loop/` directory to `~/.claude/skills/`:
+#### 1. Clone or download
 
 ```bash
-cp -r skills/skill-loop ~/.claude/skills/
+git clone https://github.com/aliksir/lesson-skill-loop.git
 ```
 
-Then use `/skill-loop` in Cowork sessions just like in Claude Code.
+Or download the ZIP from the [Releases](https://github.com/aliksir/lesson-skill-loop/releases) page.
+
+#### 2. Copy the skill to your Claude skills directory
+
+```bash
+cp -r lesson-skill-loop/skills/skill-loop ~/.claude/skills/
+```
+
+This places `SKILL.md` at `~/.claude/skills/skill-loop/SKILL.md`.
+
+#### 3. Verify installation
+
+In a Claude Cowork session, type:
+
+```
+/skill-loop
+```
+
+Claude will detect the skill and run the analysis using built-in tools.
+
+#### 4. Prepare your lesson files
+
+Place your lesson markdown files in one of these default locations (or specify a path when invoking):
+
+- `./lessons/` (current project directory)
+- `./memory/lessons/` (Claude memory directory)
+
+Lesson files should use the tag format described in [Lesson File Format](#lesson-file-format).
+
+### Cowork vs CLI comparison
+
+| Feature | CLI (`npx claude-skill-loop`) | Cowork (`/skill-loop`) |
+|---------|-------------------------------|------------------------|
+| Analyze mode | ✅ | ✅ |
+| Sync mode | ✅ | ✅ |
+| Health mode | ✅ | ✅ (file dates may show "unknown") |
+| Map mode | ✅ | ✅ |
+| JSON output | ✅ `--json` | ❌ (not needed in Cowork) |
+| Self-update | ✅ `--self-update` | ❌ (re-copy SKILL.md to update) |
+| Custom threshold | ✅ `--threshold N` | ❌ (fixed at 3) |
+| Speed | Fast (native Node.js) | Slower (Claude reads files one by one) |
 
 ## Migrating from Bash version
 
