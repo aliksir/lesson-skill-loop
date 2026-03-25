@@ -14,8 +14,10 @@ tags: [lessons, skills, feedback-loop, pattern-analysis, cowork]
 
 Claude Code と Claude Cowork の両方で動作する。
 
-- **Claude Code（Bashあり）**: Node.jsスクリプトで高速実行
+- **Claude Code（Bashあり）**: Node.jsスクリプトで高速実行（推奨）
 - **Claude Cowork（Bashなし）**: Claudeの組み込みツール（Glob/Read/Grep）で同等の分析を実行
+
+> **Cowork利用時の注意**: Coworkではプロジェクト内のファイルのみアクセス可能。教訓ファイル（`lessons/*.md`）がプロジェクトリポジトリ内に存在する場合のみ使用できる。ローカルの `~/.claude/` 配下にのみ教訓がある場合は、CLI版（`npx claude-skill-loop`）を使用すること。
 
 ## モード判定
 
