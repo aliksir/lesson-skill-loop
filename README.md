@@ -157,6 +157,10 @@ This tool also works in **Claude Cowork** (browser-based collaboration) where Ba
 
 The `skills/skill-loop/SKILL.md` contains instructions for Claude to perform the same analysis using built-in tools (Read, Glob, Grep) instead of running Node.js. All four modes (analyze, sync, health, map) are supported.
 
+### Important limitation
+
+Cowork can only access files within the current project. The skill works **only when lesson files (`lessons/*.md`) exist inside the project repository**. If your lessons are stored locally (e.g., `~/.claude/memory/lessons/`), use the CLI version (`npx claude-skill-loop`) instead.
+
 ### Setup for Cowork
 
 #### 1. Clone or download

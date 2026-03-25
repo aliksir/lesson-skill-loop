@@ -149,6 +149,10 @@ claude-skill-loop --all
 
 `skills/skill-loop/SKILL.md` に全4モード（analyze/sync/health/map）の手順が記述されています。
 
+### 制約事項
+
+Coworkはプロジェクト内のファイルのみアクセス可能です。**教訓ファイル（`lessons/*.md`）がプロジェクトリポジトリ内に存在する場合のみ**使用できます。教訓がローカル環境（`~/.claude/memory/lessons/` 等）にのみある場合は、CLI版（`npx claude-skill-loop`）を使用してください。
+
 ### セットアップ手順
 
 #### 1. クローンまたはダウンロード
