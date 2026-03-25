@@ -12,7 +12,8 @@
     "README.ja.md",
     "LICENSE",
     "examples/",
-    "commands/"
+    "commands/",
+    "skills/"
   ],
   "engines": {
     "node": ">=18"
