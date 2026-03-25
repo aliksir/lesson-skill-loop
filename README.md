@@ -184,32 +184,37 @@ git clone https://github.com/aliksir/lesson-skill-loop.git
 
 Or download the ZIP from the [Releases](https://github.com/aliksir/lesson-skill-loop/releases) page.
 
-#### 2. Copy the skill to your Claude skills directory
+#### 2. Copy the skills to your Claude skills directory
 
 ```bash
 cp -r lesson-skill-loop/skills/skill-loop ~/.claude/skills/
+cp -r lesson-skill-loop/skills/lesson ~/.claude/skills/
 ```
 
-This places `SKILL.md` at `~/.claude/skills/skill-loop/SKILL.md`.
+This installs two skills:
+- `~/.claude/skills/skill-loop/SKILL.md` — analyze lessons and propose skills
+- `~/.claude/skills/lesson/SKILL.md` — record lessons with tags
 
 #### 3. Verify installation
 
 In a Claude Cowork session, type:
 
 ```
+/lesson [test] This is a test lesson
+/lesson list
 /skill-loop
 ```
 
-Claude will detect the skill and run the analysis using built-in tools.
+#### 4. The full loop in Cowork
 
-#### 4. Prepare your lesson files
+```
+/lesson [api] Rate limit headers must be checked     ← Record
+/lesson [api] Always use exponential backoff          ← Record more
+/lesson tags                                          ← Check tag frequency
+/skill-loop                                           ← Analyze → skill candidates
+```
 
-Place your lesson markdown files in one of these default locations (or specify a path when invoking):
-
-- `./lessons/` (current project directory)
-- `./memory/lessons/` (Claude memory directory)
-
-Lesson files should use the tag format described in [Lesson File Format](#lesson-file-format).
+No lesson files needed upfront — `/lesson` creates `lessons/dev-lessons.md` automatically.
 
 ### Cowork vs CLI comparison
 
