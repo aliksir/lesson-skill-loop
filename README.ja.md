@@ -31,6 +31,8 @@ claude-skill-loop /path/to/your/lessons
 
 ## モード
 
+### 分析（CLI）
+
 | モード | コマンド | 内容 |
 |-------|---------|------|
 | **分析** | `claude-skill-loop [dir]` | タグ出現回数をカウント、3回以上のパターンをスキル化提案 |
@@ -38,6 +40,17 @@ claude-skill-loop /path/to/your/lessons
 | **健全性** | `claude-skill-loop --health [dir]` | スキルの鮮度と根拠の強さをチェック |
 | **マップ** | `claude-skill-loop --map [dir]` | スキル⇔教訓の対応を本文込みで表示（トレーサビリティ） |
 | **全部** | `claude-skill-loop --all [dir]` | 全モード実行 |
+
+### 記録（スキル — Coworkでも動作）
+
+| コマンド | 内容 |
+|---------|------|
+| `/lesson [tag] 説明` | タグ付きで教訓を記録 |
+| `/lesson list` | 記録済みの教訓を一覧表示 |
+| `/lesson tags` | タグの出現回数を集計 |
+| `/lesson search キーワード` | キーワードで教訓を検索 |
+
+作業中に教訓を記録し、`/skill-loop` で分析してフィードバックループを回す。
 
 ## オプション
 
