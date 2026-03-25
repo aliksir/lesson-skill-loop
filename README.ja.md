@@ -180,28 +180,33 @@ git clone https://github.com/aliksir/lesson-skill-loop.git
 
 ```bash
 cp -r lesson-skill-loop/skills/skill-loop ~/.claude/skills/
+cp -r lesson-skill-loop/skills/lesson ~/.claude/skills/
 ```
 
-`~/.claude/skills/skill-loop/SKILL.md` に配置されます。
+2つのスキルがインストールされます:
+- `~/.claude/skills/skill-loop/SKILL.md` — 教訓を分析してスキル化候補を提案
+- `~/.claude/skills/lesson/SKILL.md` — タグ付きで教訓を記録
 
 #### 3. 動作確認
 
 Claude Coworkセッションで以下を入力:
 
 ```
+/lesson [test] テスト教訓です
+/lesson list
 /skill-loop
 ```
 
-Claudeがスキルを検出し、組み込みツールで分析を実行します。
+#### 4. Coworkでの完全なループ
 
-#### 4. 教訓ファイルの準備
+```
+/lesson [api] Rate limitのヘッダーを必ず確認する       ← 記録
+/lesson [api] リトライはexponential backoffで          ← さらに記録
+/lesson tags                                           ← タグ集計を確認
+/skill-loop                                            ← 分析→スキル化候補
+```
 
-教訓マークダウンファイルを以下のいずれかに配置（またはパス指定）:
-
-- `./lessons/`（プロジェクトディレクトリ）
-- `./memory/lessons/`（Claudeメモリディレクトリ）
-
-タグ形式は「[教訓ファイルのフォーマット](#教訓ファイルのフォーマット)」を参照。
+教訓ファイルの事前準備は不要。`/lesson` が `lessons/dev-lessons.md` を自動作成します。
 
 ### CLIとCoworkの比較
 
