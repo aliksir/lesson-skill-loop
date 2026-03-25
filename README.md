@@ -31,6 +31,8 @@ claude-skill-loop /path/to/your/lessons
 
 ## Modes
 
+### Analysis (CLI)
+
 | Mode | Command | What it does |
 |------|---------|-------------|
 | **Analyze** | `claude-skill-loop [dir]` | Count tags, propose skills for patterns appearing 3+ times |
@@ -38,6 +40,17 @@ claude-skill-loop /path/to/your/lessons
 | **Health** | `claude-skill-loop --health [dir]` | Check skill freshness and evidence strength |
 | **Map** | `claude-skill-loop --map [dir]` | Full traceability: which lessons back which skills (with full text) |
 | **All** | `claude-skill-loop --all [dir]` | Run all modes |
+
+### Recording (Skill — works in Cowork)
+
+| Command | What it does |
+|---------|-------------|
+| `/lesson [tag] description` | Record a lesson with tags |
+| `/lesson list` | Show all recorded lessons |
+| `/lesson tags` | Show tag frequency summary |
+| `/lesson search keyword` | Search lessons by keyword |
+
+Record lessons during work, then analyze with `/skill-loop` to close the feedback loop.
 
 ## Options
 
