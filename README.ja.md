@@ -149,13 +149,55 @@ claude-skill-loop --all
 
 `skills/skill-loop/SKILL.md` に全4モード（analyze/sync/health/map）の手順が記述されています。
 
-**Cowork用インストール**:
+### セットアップ手順
+
+#### 1. クローンまたはダウンロード
 
 ```bash
-cp -r skills/skill-loop ~/.claude/skills/
+git clone https://github.com/aliksir/lesson-skill-loop.git
 ```
 
-Coworkセッションで `/skill-loop` として利用可能になります。
+または [Releases](https://github.com/aliksir/lesson-skill-loop/releases) ページからZIPをダウンロード。
+
+#### 2. スキルをClaudeのスキルディレクトリにコピー
+
+```bash
+cp -r lesson-skill-loop/skills/skill-loop ~/.claude/skills/
+```
+
+`~/.claude/skills/skill-loop/SKILL.md` に配置されます。
+
+#### 3. 動作確認
+
+Claude Coworkセッションで以下を入力:
+
+```
+/skill-loop
+```
+
+Claudeがスキルを検出し、組み込みツールで分析を実行します。
+
+#### 4. 教訓ファイルの準備
+
+教訓マークダウンファイルを以下のいずれかに配置（またはパス指定）:
+
+- `./lessons/`（プロジェクトディレクトリ）
+- `./memory/lessons/`（Claudeメモリディレクトリ）
+
+タグ形式は「[教訓ファイルのフォーマット](#教訓ファイルのフォーマット)」を参照。
+
+### CLIとCoworkの比較
+
+| 機能 | CLI (`npx claude-skill-loop`) | Cowork (`/skill-loop`) |
+|------|-------------------------------|------------------------|
+| Analyzeモード | ✅ | ✅ |
+| Syncモード | ✅ | ✅ |
+| Healthモード | ✅ | ✅（ファイル日時は「不明」になる場合あり） |
+| Mapモード | ✅ | ✅ |
+| JSON出力 | ✅ `--json` | ❌（Coworkでは不要） |
+| セルフアップデート | ✅ `--self-update` | ❌（SKILL.mdを再コピーして更新） |
+| 閾値カスタマイズ | ✅ `--threshold N` | ❌（3固定） |
+| 速度 | 高速（Node.jsネイティブ） | やや遅い（Claudeがファイルを1つずつ読む） |
 
 ## 参考
 
