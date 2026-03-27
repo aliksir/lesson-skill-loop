@@ -75,7 +75,7 @@ function getCurrentVersion() {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
       return pkg.version || null;
     }
-  } catch {}
+  } catch { /* package.json読み取り失敗時はnullを返してバージョン表示を省略 */ }
   return null;
 }
 
@@ -88,7 +88,7 @@ function getLatestVersion() {
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
   } catch {
-    return null; // オフライン等
+    return null; // npmレジストリ接続失敗（オフライン等）時は最新バージョン確認をスキップ
   }
 }
 
@@ -121,7 +121,7 @@ function isNpx() {
     });
     return !out.includes('claude-skill-loop');
   } catch {
-    return false;
+    return false; // npm list失敗時はグローバルインストール済みと仮定してnpx扱いにしない
   }
 }
 
@@ -161,12 +161,15 @@ for (let i = 0; i < args.length; i++) {
     case '--all':     mode = 'all';     break;
     case '--json':    jsonMode = true;  break;
     case '--dir':
+      // args[++i] が配列末尾を超えた場合は undefined → '' にフォールバック（意図的）
       lessonsDir = args[++i] || '';
       break;
     case '--skills-dir':
+      // 同上: オプション値省略時は '' にフォールバック（デフォルト値が後続で適用される）
       skillsDir = args[++i] || '';
       break;
     case '--threshold':
+      // 同上: 数値でない場合は parseInt がNaNになるため || 3 でデフォルト値にフォールバック
       threshold = parseInt(args[++i], 10) || 3;
       break;
     case '--self-update':
@@ -247,7 +250,7 @@ if (LESSON_FILES.length === 0) {
 function readAllLessons() {
   return LESSON_FILES
     .map(f => {
-      try { return readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { return ''; }
+      try { return readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { return ''; /* ファイル読み取り失敗時は空文字列で集計をスキップ */ }
     })
     .join('\n');
 }
@@ -266,7 +269,7 @@ function getTags() {
 
   for (const f of LESSON_FILES) {
     let content;
-    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; }
+    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; /* ファイル読み取り失敗時はこのファイルをスキップ */ }
 
     // 見出し行（### で始まる行）のみを対象にする
     const headingLines = content.split('\n').filter(line => /^###\s/.test(line));
@@ -295,7 +298,7 @@ function getLessonHeadingsForTag(tag) {
   const results = [];
   for (const f of LESSON_FILES) {
     let content;
-    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; }
+    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; /* ファイル読み取り失敗時はこのファイルをスキップ */ }
     const lines = content.split('\n');
     for (const line of lines) {
       if (line.startsWith('### ') && line.includes(tag)) {
@@ -317,7 +320,7 @@ function getLessonSectionsForTag(tag) {
 
   for (const f of LESSON_FILES) {
     let content;
-    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; }
+    try { content = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { continue; /* ファイル読み取り失敗時はこのファイルをスキップ */ }
 
     const lines = content.split('\n');
     let inSection = false;
@@ -364,7 +367,7 @@ function getLessonSectionsForTag(tag) {
  */
 function getSkillItems(skillPath) {
   let content;
-  try { content = readFileSync(skillPath, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { return []; }
+  try { content = readFileSync(skillPath, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'); } catch { return []; /* SKILL.md読み取り失敗時は空配列を返してスキルなしとして扱う */ }
   return content
     .split('\n')
     .filter(line => /^\s*- \[[ x]\]/.test(line))
@@ -388,9 +391,9 @@ function getChecklistSkills() {
       .filter(s => {
         try {
           return statSync(s.dir).isDirectory() && existsSync(s.file);
-        } catch { return false; }
+        } catch { return false; /* statSync失敗時はエントリをフィルタアウト */ }
       });
-  } catch { return []; }
+  } catch { return []; /* readdirSync失敗時（アクセス不可等）は空配列を返す */ }
 }
 
 /**
@@ -403,7 +406,7 @@ function getDaysOld(filePath) {
     const mtime = statSync(filePath).mtime;
     return Math.floor((Date.now() - mtime.getTime()) / (1000 * 60 * 60 * 24));
   } catch {
-    return -1;
+    return -1; /* statSync失敗時は-1を返して「経過日数不明」として扱う */
   }
 }
 
@@ -417,7 +420,7 @@ function getLastModified(filePath) {
     const mtime = statSync(filePath).mtime;
     return mtime.toISOString().slice(0, 10);
   } catch {
-    return '不明';
+    return '不明'; /* statSync失敗時は「不明」を返す */
   }
 }
 
