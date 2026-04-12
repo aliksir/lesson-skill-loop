@@ -1,6 +1,6 @@
 {
   "name": "claude-skill-loop",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "description": "Turn development lessons into reusable Claude Code skills — analyze patterns, detect gaps, check health",
   "type": "module",
   "bin": {

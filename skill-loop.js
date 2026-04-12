@@ -10,6 +10,7 @@
 //   node skill-loop.js --health [lessons_dir]     # スキル健全性チェック
 //   node skill-loop.js --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
 //   node skill-loop.js --all [lessons_dir]        # 全部実行
+//   node skill-loop.js --for <project-dir>        # v2.3.0: プロジェクトスタック検出+教訓フィルタ
 //   node skill-loop.js --json [lessons_dir]       # JSON形式出力
 //   node skill-loop.js --self-update              # ツール自身を最新版に更新
 //
@@ -29,6 +30,7 @@ let mode = 'analyze';
 let jsonMode = false;
 let lessonsDir = '';
 let skillsDir = '';
+let projectDir = ''; // v2.3.0: --for <path>
 let threshold = 3;
 const selfUpdateMode = args.includes('--self-update');
 const noVersionCheck = args.includes('--no-version-check');
@@ -49,6 +51,12 @@ Modes:
 Options:
   --dir <path>       Lessons directory (or pass as positional arg)
   --skills-dir <path> Skills directory (default: ~/.claude/skills)
+  --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
+                     Relative paths are resolved from the current working directory.
+                     The target must be a directory (not a file).
+                     Only top-level manifests are scanned; monorepos are not supported.
+                     Supported: package.json / requirements.txt / pyproject.toml /
+                                Pipfile / Cargo.toml / go.mod / Gemfile / composer.json
   --threshold <n>    Min tag occurrences for skill candidates (default: 3)
   --json             JSON output
   --self-update      Update tool itself via npm install -g claude-skill-loop@latest
@@ -172,6 +180,10 @@ for (let i = 0; i < args.length; i++) {
       // 同上: 数値でない場合は parseInt がNaNになるため || 3 でデフォルト値にフォールバック
       threshold = parseInt(args[++i], 10) || 3;
       break;
+    case '--for':
+      // v2.3.0: プロジェクトディレクトリを指定してスタック検出+教訓フィルタ
+      projectDir = args[++i] || '';
+      break;
     case '--self-update':
     case '--no-version-check':
       break; // 上位で処理済み
@@ -196,6 +208,462 @@ const SKILLS_DIR = skillsDir
 
 const SCAN_PATHS = process.env.LESSON_SKILL_SCAN_PATHS || LESSONS_DIR;
 const THRESHOLD = threshold;
+
+// v2.3.0: --for 関連のグローバル状態
+// projectDir 指定時のみセットされる。null の場合は v2.2.2 完全互換動作
+let stackMetadata = null;
+let allowedTags = null;
+
+// ============================================================================
+// v2.3.0: スタック検出マッピング表
+// ============================================================================
+
+/**
+ * 対応マニフェストファイル一覧（v2.3.0: 6 言語 8 マニフェスト）
+ *
+ * v2.4.0 以降に延期: Java/Kotlin (pom.xml/build.gradle/build.gradle.kts) /
+ *                    .NET (*.csproj) / Elixir (mix.exs)
+ */
+const STACK_MANIFESTS = [
+  // JavaScript / TypeScript
+  { file: 'package.json',      parser: parsePackageJson,     lang: 'javascript' },
+  // Python
+  { file: 'requirements.txt',  parser: parseRequirementsTxt, lang: 'python' },
+  { file: 'pyproject.toml',    parser: parsePyprojectToml,   lang: 'python' },
+  { file: 'Pipfile',           parser: parsePipfile,         lang: 'python' },
+  // Rust
+  { file: 'Cargo.toml',        parser: parseCargoToml,       lang: 'rust' },
+  // Go
+  { file: 'go.mod',            parser: parseGoMod,           lang: 'go' },
+  // Ruby
+  { file: 'Gemfile',           parser: parseGemfile,         lang: 'ruby' },
+  // PHP
+  { file: 'composer.json',     parser: parseComposerJson,    lang: 'php' },
+];
+
+/**
+ * 技術→タグマッピング（hardTags/softTags 分離）
+ * hardTags: フィルタで直接マッチさせる強いタグ（precision 優先）
+ * softTags: 関連タグとしてフィルタ後の優先度付け・表示にのみ使用（recall 優先）
+ *
+ * Next/Nuxt は親フレームワーク (React/Vue) を hard に含める
+ * （Next.js プロジェクトで `[react]` 教訓を除外するのは実用上おかしいため）
+ */
+const TECH_TO_TAGS = {
+  // --- JavaScript / TypeScript ---
+  'react':        { hard: ['react'],        soft: ['hooks', 'component', 'frontend'] },
+  'vue':          { hard: ['vue'],          soft: ['component', 'frontend'] },
+  'next':         { hard: ['next', 'nextjs', 'react'], soft: ['hooks', 'ssr', 'frontend'] },
+  'nuxt':         { hard: ['nuxt', 'vue'],  soft: ['ssr', 'frontend'] },
+  'svelte':       { hard: ['svelte'],       soft: ['frontend'] },
+  'astro':        { hard: ['astro'],        soft: ['ssg', 'frontend'] },
+  'express':      { hard: ['express'],      soft: ['node', 'backend', 'api'] },
+  'fastify':      { hard: ['fastify'],      soft: ['node', 'backend', 'api'] },
+  'nestjs':       { hard: ['nestjs'],       soft: ['node', 'backend', 'api'] },
+  '@nestjs/core': { hard: ['nestjs'],       soft: ['node', 'backend', 'api'] },
+  'tailwindcss':  { hard: ['tailwind'],     soft: ['css', 'frontend'] },
+  'typescript':   { hard: ['typescript'],   soft: ['types'] },
+  'playwright':   { hard: ['playwright'],   soft: ['e2e', 'test'] },
+  '@playwright/test': { hard: ['playwright'], soft: ['e2e', 'test'] },
+  'vitest':       { hard: ['vitest'],       soft: ['test'] },
+  'jest':         { hard: ['jest'],         soft: ['test'] },
+  'prisma':       { hard: ['prisma'],       soft: ['orm', 'db'] },
+
+  // --- Python ---
+  'fastapi':      { hard: ['fastapi'],      soft: ['async', 'api', 'backend'] },
+  'django':       { hard: ['django'],       soft: ['backend', 'orm', 'mvc'] },
+  'flask':        { hard: ['flask'],        soft: ['backend', 'api'] },
+  'starlette':    { hard: ['starlette'],    soft: ['async', 'api'] },
+  'pydantic':     { hard: ['pydantic'],     soft: ['validation'] },
+  'sqlalchemy':   { hard: ['sqlalchemy'],   soft: ['orm', 'db'] },
+  'pytest':       { hard: ['pytest'],       soft: ['test'] },
+
+  // --- Rust ---
+  'tokio':        { hard: ['tokio'],        soft: ['async'] },
+  'axum':         { hard: ['axum'],         soft: ['backend', 'api'] },
+  'actix-web':    { hard: ['actix'],        soft: ['backend', 'api'] },
+  'serde':        { hard: ['serde'],        soft: ['serialization'] },
+  'reqwest':      { hard: ['reqwest'],      soft: ['http'] },
+
+  // --- Go ---
+  'gin':          { hard: ['gin'],          soft: ['backend', 'api'] },
+  'echo':         { hard: ['echo'],         soft: ['backend', 'api'] },
+  'fiber':        { hard: ['fiber'],        soft: ['backend', 'api'] },
+  'chi':          { hard: ['chi'],          soft: ['backend', 'api'] },
+
+  // --- Ruby ---
+  'rails':        { hard: ['rails'],        soft: ['mvc', 'orm', 'backend'] },
+  'sinatra':      { hard: ['sinatra'],      soft: ['backend', 'api'] },
+  'rack':         { hard: ['rack'],         soft: ['backend'] },
+  'rspec':        { hard: ['rspec'],        soft: ['test'] },
+  'rspec-rails':  { hard: ['rspec'],        soft: ['test'] },
+
+  // --- PHP ---
+  'laravel':      { hard: ['laravel'],      soft: ['mvc', 'orm', 'backend'] },
+  'symfony':      { hard: ['symfony'],      soft: ['backend', 'api'] },
+  'phpunit':      { hard: ['phpunit'],      soft: ['test'] },
+};
+
+/**
+ * 言語単位のタグ（hardTags のみ）
+ */
+const LANG_TO_TAGS = {
+  'javascript': { hard: ['javascript'], soft: [] },
+  'python':     { hard: ['python'],     soft: [] },
+  'rust':       { hard: ['rust'],       soft: [] },
+  'go':         { hard: ['go', 'golang'], soft: [] },
+  'ruby':       { hard: ['ruby'],       soft: [] },
+  'php':        { hard: ['php'],        soft: [] },
+};
+
+/**
+ * 非フレームワーク vendor のブラックリスト（composer.json 用）
+ * v2.3.0 では 6 vendor で確定。
+ */
+const COMPOSER_VENDOR_BLACKLIST = new Set([
+  'roave',         // roave/security-advisories 等
+  'phpstan',       // phpstan/phpstan 等の静的解析ツール
+  'phan',          // phan/phan
+  'squizlabs',     // squizlabs/php_codesniffer
+  'friendsofphp',  // friendsofphp/php-cs-fixer
+  'vimeo',         // vimeo/psalm
+]);
+
+// ============================================================================
+// v2.3.0: スタック検出共通ヘルパ
+// ============================================================================
+
+/** 正規表現メタ文字をエスケープする */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** UTF-8 BOM を除去する */
+function stripBOM(text) {
+  return text.replace(/^\uFEFF/, '');
+}
+
+/**
+ * ファイルを読み込み、BOM と改行コードを正規化する
+ * スタックマニフェスト読み込みで使用（教訓ファイル側は従来動作を維持）
+ */
+function readTextFile(filePath) {
+  const raw = readFileSync(filePath, 'utf8');
+  return stripBOM(raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * TOML 風ファイルから特定セクションの本文を抽出する（行走査版）
+ *
+ * - `[[tool.poetry.source]]` のような array-of-tables を次セクション境界と認識
+ * - 三連引用文字列 `"""..."""` / `'''...'''` の内側は完全に素通し
+ * - セクション見出しの末尾コメント `[project] # comment` に対応
+ *
+ * @param {string} content — ファイル全文
+ * @param {string} sectionName — 抽出したいセクション名（例: 'tool.poetry.dependencies'）
+ * @returns {string} セクション本文（見出し行を含まない）
+ */
+function extractTomlSection(content, sectionName) {
+  const lines = content.split('\n');
+  const escaped = escapeRegExp(sectionName);
+  // 対象セクション: [section] のみ（array-of-tables [[...]] は別扱い）
+  // 末尾にコメントが付く形式にも対応
+  const targetRe = new RegExp(`^\\[${escaped}\\]\\s*(#.*)?$`);
+  // 任意のセクション見出し: [x] または [[x]]（末尾コメント可）
+  const anySectionRe = /^\[\[?[^\[\]]+\]?\]\s*(#.*)?$/;
+
+  const result = [];
+  let inTarget = false;
+  let inMultiline = false;
+  let multilineDelim = '';
+
+  for (const rawLine of lines) {
+    const line = rawLine;
+    const trimmed = line.trim();
+
+    // 三連引用文字列内は終了判定のみ行い、行は result に含めない
+    // （multiline 本文を push すると parser が key = value として誤認するため）
+    if (inMultiline) {
+      if (line.includes(multilineDelim)) {
+        const occ = (line.match(new RegExp(escapeRegExp(multilineDelim), 'g')) || []).length;
+        // 行内で奇数回出現すると multiline 終了
+        if (occ % 2 === 1) inMultiline = false;
+      }
+      continue;
+    }
+
+    // セクション見出し判定（multiline 開始より先に行う）
+    if (targetRe.test(trimmed)) {
+      inTarget = true;
+      continue;
+    }
+    if (anySectionRe.test(trimmed)) {
+      inTarget = false;
+      continue;
+    }
+
+    // 三連引用文字列の開始検出（行内で奇数回の出現は状態継続）
+    // 開始行は multiline として扱い、キー抽出対象から除外する
+    const tripleDoubleCount = (line.match(/"""/g) || []).length;
+    const tripleSingleCount = (line.match(/'''/g) || []).length;
+    if (tripleDoubleCount % 2 === 1) {
+      inMultiline = true;
+      multilineDelim = '"""';
+      continue;
+    }
+    if (tripleSingleCount % 2 === 1) {
+      inMultiline = true;
+      multilineDelim = "'''";
+      continue;
+    }
+
+    if (inTarget) result.push(line);
+  }
+
+  return result.join('\n');
+}
+
+// ============================================================================
+// v2.3.0: マニフェストパーサー（6 言語 8 種）
+// ============================================================================
+
+/** package.json から dependencies + devDependencies を抽出 */
+function parsePackageJson(filePath) {
+  const content = readTextFile(filePath);
+  const pkg = JSON.parse(content); // parse 失敗は throw → 呼び出し側で errors に記録
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  return Object.keys(deps);
+}
+
+/** requirements.txt から依存名を抽出 */
+function parseRequirementsTxt(filePath) {
+  const content = readTextFile(filePath);
+  return content
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !l.startsWith('#') && !l.startsWith('-'))
+    .filter(l => !/^(https?:|git\+|svn\+|hg\+)/.test(l))
+    .map(l => l.split(/[<>=!~\s;\[]/)[0].toLowerCase())
+    .filter(Boolean);
+}
+
+/** pyproject.toml から依存名を抽出（poetry / PEP 621 両対応） */
+function parsePyprojectToml(filePath) {
+  const content = readTextFile(filePath);
+  const deps = new Set();
+
+  // [tool.poetry.dependencies]
+  const poetrySection = extractTomlSection(content, 'tool.poetry.dependencies');
+  for (const line of poetrySection.split('\n')) {
+    const m = line.match(/^([a-zA-Z0-9_.-]+)\s*=/);
+    if (m && m[1].toLowerCase() !== 'python') deps.add(m[1].toLowerCase());
+  }
+
+  // [project] の dependencies = [ ... ]（PEP 621）
+  // 配列終端の `]` と extras `[standard]` の `]` を誤認しないよう、引用符内文字列を個別抽出
+  const projectSection = extractTomlSection(content, 'project');
+  const depItems = projectSection.match(/["'][^"']+["']/g) || [];
+  const inDepsSection = projectSection.match(/dependencies\s*=\s*\[/);
+  if (inDepsSection) {
+    // dependencies = [ ... ] 内の引用符文字列から依存名を抽出
+    // 各行の引用符文字列を取得（配列内のみ）
+    const afterDeps = projectSection.slice(inDepsSection.index + inDepsSection[0].length);
+    const items = afterDeps.match(/["'][^"']+["']/g) || [];
+    for (const q of items) {
+      const raw = q.replace(/["']/g, '');
+      const name = raw.split(/[<>=!~\s;\[]/)[0].toLowerCase();
+      if (name) deps.add(name);
+    }
+  }
+
+  return [...deps];
+}
+
+/** Pipfile から依存名を抽出 */
+function parsePipfile(filePath) {
+  const content = readTextFile(filePath);
+  const deps = new Set();
+  const section = extractTomlSection(content, 'packages');
+  for (const line of section.split('\n')) {
+    const m = line.match(/^([a-zA-Z0-9_.-]+)\s*=/);
+    if (m) deps.add(m[1].toLowerCase());
+  }
+  return [...deps];
+}
+
+/**
+ * Cargo.toml から依存名を抽出
+ * - [dependencies] / [dev-dependencies] / [build-dependencies] / [workspace.dependencies]
+ * - 各テーブル形式 [dependencies.foo] 等にも対応
+ */
+function parseCargoToml(filePath) {
+  const content = readTextFile(filePath);
+  const deps = new Set();
+  const lines = content.split('\n');
+
+  const INLINE_SECTIONS = [
+    'dependencies',
+    'dev-dependencies',
+    'build-dependencies',
+    'workspace.dependencies',
+  ];
+
+  for (const name of INLINE_SECTIONS) {
+    const section = extractTomlSection(content, name);
+    for (const line of section.split('\n')) {
+      const m = line.match(/^([a-zA-Z0-9_-]+)\s*=/);
+      if (m) deps.add(m[1].toLowerCase());
+    }
+  }
+
+  // テーブル形式（見出しから直接検出）
+  const tableRe = /^\[(?:dependencies|dev-dependencies|build-dependencies|workspace\.dependencies)\.([a-zA-Z0-9_-]+)\]\s*(#.*)?$/;
+  for (const line of lines) {
+    const m = line.trim().match(tableRe);
+    if (m) deps.add(m[1].toLowerCase());
+  }
+
+  return [...deps];
+}
+
+/** go.mod から依存名（最終パスセグメント）を抽出 */
+function parseGoMod(filePath) {
+  const content = readTextFile(filePath);
+  const deps = new Set();
+  const lines = content.split('\n');
+  let inBlock = false;
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (trimmed === 'require (') { inBlock = true; continue; }
+    if (trimmed === ')') { inBlock = false; continue; }
+    const isRequireLine = inBlock || trimmed.startsWith('require ');
+    if (!isRequireLine) continue;
+    const stripped = trimmed.replace(/^require\s+/, '');
+    const m = stripped.match(/^([a-z0-9.\/_-]+)\s+v/);
+    if (m) {
+      const parts = m[1].split('/');
+      const last = parts[parts.length - 1];
+      if (last) deps.add(last.toLowerCase());
+    }
+  }
+  return [...deps];
+}
+
+/** Gemfile から gem 名を抽出 */
+function parseGemfile(filePath) {
+  const content = readTextFile(filePath);
+  const deps = new Set();
+  for (const line of content.split('\n')) {
+    const m = line.trim().match(/^gem\s+["']([a-zA-Z0-9_-]+)["']/);
+    if (m) deps.add(m[1].toLowerCase());
+  }
+  return [...deps];
+}
+
+/** composer.json から vendor 名（ブラックリスト除外）を抽出 */
+function parseComposerJson(filePath) {
+  const content = readTextFile(filePath);
+  const pkg = JSON.parse(content);
+  const deps = { ...(pkg.require || {}), ...(pkg['require-dev'] || {}) };
+  const result = new Set();
+  for (const key of Object.keys(deps)) {
+    if (key === 'php' || key.startsWith('ext-')) continue;
+    const vendor = key.split('/')[0].toLowerCase();
+    if (!vendor) continue;
+    if (COMPOSER_VENDOR_BLACKLIST.has(vendor)) continue;
+    result.add(vendor);
+  }
+  return [...result];
+}
+
+// ============================================================================
+// v2.3.0: スタック検出・タグ導出
+// ============================================================================
+
+/**
+ * プロジェクトディレクトリからスタックを検出する
+ * v2.3.0 では projectDir 直下のマニフェストのみ走査（モノレポ非対応）
+ * @param {string} projectDir — 絶対パス
+ */
+function detectStack(projectDir) {
+  const technologies = new Set();
+  const languages = new Set();
+  const sources = [];
+  const errors = [];
+
+  for (const { file, parser, lang } of STACK_MANIFESTS) {
+    const path = join(projectDir, file);
+    if (!existsSync(path)) continue;
+
+    sources.push(file);
+    languages.add(lang);
+
+    try {
+      const deps = parser(path);
+      for (const dep of deps) technologies.add(dep);
+    } catch (e) {
+      errors.push({
+        file,
+        reason: e && e.message ? String(e.message).slice(0, 200) : 'parse error',
+      });
+    }
+  }
+
+  return {
+    languages: [...languages],
+    technologies: [...technologies],
+    sources,
+    errors,
+  };
+}
+
+/** 検出した技術・言語から hardTags のみを抽出（フィルタ用） */
+function stackToAllowedTags({ languages, technologies }) {
+  const tags = new Set();
+  for (const lang of languages) {
+    const entry = LANG_TO_TAGS[lang];
+    if (!entry) continue;
+    for (const t of entry.hard) tags.add(`[${t}]`);
+  }
+  for (const tech of technologies) {
+    const entry = TECH_TO_TAGS[tech];
+    if (!entry) continue;
+    for (const t of entry.hard) tags.add(`[${t}]`);
+  }
+  return tags;
+}
+
+/** 検出した技術・言語から softTags を抽出（表示優先度用） */
+function stackToSoftTags({ languages, technologies }) {
+  const tags = new Set();
+  for (const lang of languages) {
+    const entry = LANG_TO_TAGS[lang];
+    if (!entry) continue;
+    for (const t of entry.soft) tags.add(`[${t}]`);
+  }
+  for (const tech of technologies) {
+    const entry = TECH_TO_TAGS[tech];
+    if (!entry) continue;
+    for (const t of entry.soft) tags.add(`[${t}]`);
+  }
+  return tags;
+}
+
+/**
+ * `stack` JSON オブジェクトを組み立てる単一責務関数
+ * メインフロー / doAll / runMode の全てからこれを通して生成する
+ */
+function buildStackMetadata(projectAbsPath, detectedStack) {
+  return {
+    projectDir: projectAbsPath,
+    languages: detectedStack.languages,
+    technologies: detectedStack.technologies,
+    sources: detectedStack.sources,
+    hardTags: [...stackToAllowedTags(detectedStack)],
+    softTags: [...stackToSoftTags(detectedStack)],
+    errors: detectedStack.errors,
+  };
+}
 
 // --- ファイルリスト構築 ---
 
@@ -232,15 +700,8 @@ function buildFileList() {
 }
 
 const LESSON_FILES = buildFileList();
-
-if (LESSON_FILES.length === 0) {
-  if (jsonMode) {
-    console.log(JSON.stringify({ error: 'No lesson files found', path: SCAN_PATHS }));
-  } else {
-    console.error(`教訓ファイルが見つかりません: ${SCAN_PATHS}`);
-  }
-  process.exit(1);
-}
+// v2.3.0: LESSON_FILES 空チェックは main() 内で --for 検証の後に実施
+// （--for の入力検証が正しく先に走るようにするため）
 
 // --- 共通ユーティリティ ---
 
@@ -429,6 +890,13 @@ function getLastModified(filePath) {
 function doAnalyze() {
   const tags = getTags();
 
+  // v2.3.0: --for 指定時は allowedTags でフィルタ
+  if (allowedTags) {
+    for (const tag of [...tags.keys()]) {
+      if (!allowedTags.has(tag)) tags.delete(tag);
+    }
+  }
+
   if (jsonMode) {
     const tagList = [...tags.entries()].map(([tag, count]) => ({ tag, count }));
     const candidates = tagList.filter(t => t.count >= THRESHOLD).map(t => ({
@@ -481,7 +949,15 @@ function doAnalyze() {
 // --- モード2: 既存スキルとの差分分析 ---
 
 function doSync() {
-  const skills = getChecklistSkills();
+  let skills = getChecklistSkills();
+
+  // v2.3.0: --for 指定時は allowedTags で skills をフィルタ
+  if (allowedTags) {
+    skills = skills.filter(skill => {
+      const tagName = skill.name.replace(/-checklist$/, '');
+      return allowedTags.has(`[${tagName}]`);
+    });
+  }
 
   if (jsonMode) {
     const results = skills.map(skill => {
@@ -571,7 +1047,15 @@ function doSync() {
 // --- モード3: スキル健全性チェック ---
 
 function doHealth() {
-  const skills = getChecklistSkills();
+  let skills = getChecklistSkills();
+
+  // v2.3.0: --for 指定時は allowedTags で skills をフィルタ
+  if (allowedTags) {
+    skills = skills.filter(skill => {
+      const tagName = skill.name.replace(/-checklist$/, '');
+      return allowedTags.has(`[${tagName}]`);
+    });
+  }
 
   if (jsonMode) {
     const allContent = readAllLessons();
@@ -651,7 +1135,15 @@ function doHealth() {
 // --- モード4: トレーサビリティマップ ---
 
 function doMap() {
-  const skills = getChecklistSkills();
+  let skills = getChecklistSkills();
+
+  // v2.3.0: --for 指定時は allowedTags で skills をフィルタ
+  if (allowedTags) {
+    skills = skills.filter(skill => {
+      const tagName = skill.name.replace(/-checklist$/, '');
+      return allowedTags.has(`[${tagName}]`);
+    });
+  }
 
   if (jsonMode) {
     const skillMap = skills.map(skill => {
@@ -667,6 +1159,12 @@ function doMap() {
     });
 
     const tags = getTags();
+    // v2.3.0: --for 指定時は tags 側も allowedTags でフィルタ
+    if (allowedTags) {
+      for (const tag of [...tags.keys()]) {
+        if (!allowedTags.has(tag)) tags.delete(tag);
+      }
+    }
     const skilledTags = new Set(skills.map(s => s.name.replace(/-checklist$/, '')));
     const unSkilledCandidates = [...tags.entries()]
       .filter(([tag, count]) => {
@@ -718,6 +1216,12 @@ function doMap() {
     console.log('');
 
     const tags = getTags();
+    // v2.3.0: --for 指定時は tags 側も allowedTags でフィルタ
+    if (allowedTags) {
+      for (const tag of [...tags.keys()]) {
+        if (!allowedTags.has(tag)) tags.delete(tag);
+      }
+    }
     const skilledTagsFromSkills = new Set(skills.map(s => s.name.replace(/-checklist$/, '')));
 
     let hasCandidates = false;
@@ -754,12 +1258,18 @@ function doMap() {
 
 function doAll() {
   if (jsonMode) {
-    return {
+    const result = {
+      mode: 'all',
       analyze: doAnalyze(),
       sync: doSync(),
       health: doHealth(),
       map: doMap()
     };
+    // v2.3.0: --for 指定時のみトップレベルに stack を 1 回付与
+    if (stackMetadata) {
+      result.stack = stackMetadata;
+    }
+    return result;
   }
 
   doAnalyze();
@@ -776,11 +1286,108 @@ function doAll() {
 
 // --- エントリポイント ---
 
+/**
+ * v2.3.0: --for <path> の入力検証 + スタック検出 + グローバル変数セット
+ * 呼び出し側で projectDir が空でない場合のみ実行される
+ */
+function applyStackFilter() {
+  const resolved = resolve(projectDir);
+
+  if (!existsSync(resolved)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: '--for path not found', path: resolved }));
+    } else {
+      console.error(`❌ --for パスが存在しません: ${resolved}`);
+    }
+    process.exit(1);
+  }
+
+  let stat;
+  try {
+    stat = statSync(resolved);
+  } catch (e) {
+    const reason = e && e.message ? String(e.message) : String(e);
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: '--for stat failed', path: resolved, reason }));
+    } else {
+      console.error(`❌ --for パスの状態取得に失敗: ${resolved}`);
+      console.error(`   ${reason}`);
+    }
+    process.exit(1);
+  }
+
+  if (!stat.isDirectory()) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: '--for expects a directory, got file', path: resolved }));
+    } else {
+      console.error(`❌ --for はディレクトリパスを要求します（ファイルが渡されました）: ${resolved}`);
+    }
+    process.exit(1);
+  }
+
+  const detectedStack = detectStack(resolved);
+  const computedTags = stackToAllowedTags(detectedStack);
+
+  if (computedTags.size === 0) {
+    if (!jsonMode) {
+      console.log(`⚠️  スタック未検出または未対応: ${resolved}`);
+      console.log(`   → フィルタなしで実行します（全教訓対象）`);
+      if (detectedStack.errors.length > 0) {
+        console.log(`   ⚠️  パース失敗: ${detectedStack.errors.map(e => e.file).join(', ')}`);
+      }
+      console.log('');
+    }
+    // allowedTags は null のまま、stackMetadata も生成する（JSON 出力で情報提示のため）
+    stackMetadata = buildStackMetadata(resolved, detectedStack);
+    return;
+  }
+
+  allowedTags = computedTags;
+  stackMetadata = buildStackMetadata(resolved, detectedStack);
+
+  if (!jsonMode) {
+    const softTags = stackToSoftTags(detectedStack);
+    console.log(`🔍 スタック検出: ${detectedStack.sources.join(', ')}`);
+    console.log(`   言語: ${detectedStack.languages.join(', ') || '(なし)'}`);
+    const techs = detectedStack.technologies;
+    const techHead = techs.slice(0, 10).join(', ');
+    const techExtra = techs.length > 10 ? ` ... (+${techs.length - 10})` : '';
+    console.log(`   技術: ${techHead}${techExtra}`);
+    console.log(`   hardTags (${allowedTags.size}): ${[...allowedTags].join(' ')}`);
+    if (softTags.size > 0) {
+      const softArr = [...softTags];
+      const softHead = softArr.slice(0, 8).join(' ');
+      const softExtra = softArr.length > 8 ? ' ...' : '';
+      console.log(`   softTags (${softTags.size}): ${softHead}${softExtra}`);
+    }
+    if (detectedStack.errors.length > 0) {
+      console.log(`   ⚠️  パース失敗: ${detectedStack.errors.map(e => e.file).join(', ')}`);
+    }
+    console.log('');
+  }
+}
+
 async function main() {
   // --self-update: ツール自身を更新して終了
   if (selfUpdateMode) {
     await selfUpdate();
     return;
+  }
+
+  // v2.3.0: --for 指定時のみスタック検出とフィルタ適用
+  // LESSON_FILES 空チェックより先に実行する（--for 専用エラー契約の保証）
+  if (projectDir) {
+    applyStackFilter();
+  }
+
+  // v2.3.0: LESSON_FILES 空チェック（--for 検証の後段）
+  if (LESSON_FILES.length === 0) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'No lesson files found', path: SCAN_PATHS }));
+    } else {
+      console.error(`教訓ファイルが見つかりません: ${SCAN_PATHS}`);
+    }
+    process.exit(1);
   }
 
   if (jsonMode) {
@@ -791,6 +1398,10 @@ async function main() {
       case 'health':  result = doHealth();  break;
       case 'map':     result = doMap();     break;
       case 'all':     result = doAll();     break;
+    }
+    // v2.3.0: 単体モードでは stack をトップレベルに差し込む（doAll は内部で処理済み）
+    if (stackMetadata && mode !== 'all') {
+      result = { ...result, stack: stackMetadata };
     }
     console.log(JSON.stringify(result, null, 2));
   } else {

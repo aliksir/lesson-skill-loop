@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.3.0] - 2026-04-12
+
+### Added
+- `--for <project-path>`: Stack-aware lesson filter — detect the project's technology stack from manifest files and filter lessons to those relevant to the detected stack. Complements `autoskills` by providing stack-to-past-failures linkage (rather than stack-to-generic-skills distribution).
+- Stack detection for 6 languages / 8 manifest types:
+  - **JavaScript / TypeScript**: `package.json`
+  - **Python**: `requirements.txt`, `pyproject.toml`, `Pipfile`
+  - **Rust**: `Cargo.toml` (incl. `[workspace.dependencies]`, `[build-dependencies]`, `[dependencies.foo]` table form)
+  - **Go**: `go.mod`
+  - **Ruby**: `Gemfile`
+  - **PHP**: `composer.json` (with non-framework vendor blacklist)
+- Framework hierarchy in tag mapping: `next` → `[react]`, `nuxt` → `[vue]`, etc.
+- `hardTags` / `softTags` split: filter uses hardTags only (precision); softTags shown for related context (recall).
+- UTF-8 BOM handling for all manifest parsers.
+- Monorepo: explicitly not supported in v2.3.0 (only top-level manifests scanned). Planned for v2.4.0.
+
+### JSON Schema
+- `--for` specified: adds `stack` field at top level with `{ projectDir, languages, technologies, sources, hardTags, softTags, errors }`.
+- `--for` not specified: JSON output is **byte-for-byte identical** to v2.2.x for single modes (analyze, sync, health, map).
+- `--all --json`: now includes `mode: "all"` at top level for consistency with single modes (which already had `mode`). This is a backward-compatible field addition.
+- `--all --json --for`: `stack` appears **once at top level only**, not duplicated in each mode object.
+
+### Tests
+- 33 new tests covering all 8 parsers, stack detection integration, CLI option validation, BOM handling, `[[array-of-tables]]` edge cases, Cargo workspace, framework hierarchy, backward compatibility, and `--all --json` schema.
+- Total: 32 → 65 tests. Test file: 403 → 902 lines.
+
+### Design & Review
+- Design spec reviewed 4 times via `codex` CLI (v1 → v2 → v3 → v4 APPROVE). 29 review findings total, all resolved or intentionally deferred to v2.4.0.
+
 ## [2.2.1] - 2026-03-22
 
 ### Fixed

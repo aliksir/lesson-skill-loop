@@ -59,7 +59,46 @@ Record lessons during work, then analyze with `/skill-loop` to close the feedbac
 | `--json` | Output in JSON format (for scripting / CI integration) |
 | `--dir <path>` | Specify lessons directory (alternative to positional arg) |
 | `--skills-dir <path>` | Specify skills directory |
+| `--for <path>` | **(v2.3.0+)** Filter lessons by stack detected in `<path>`. See "Stack-aware filtering" below. |
 | `--threshold <n>` | Skill proposal threshold, default: `3` |
+
+## Stack-aware filtering (`--for`, v2.3.0+)
+
+`--for <project-path>` detects the technology stack in the target project and shows only lessons relevant to the detected stack. This lets you surface "past failures that matter for *this* project" — complementary to tools like `autoskills` that push *generic* skills.
+
+```bash
+# Show only lessons tagged with technologies detected in ./my-next-app
+claude-skill-loop --for ./my-next-app ~/.claude/lessons
+
+# Combine with any mode
+claude-skill-loop --all --for ./my-rust-service ~/.claude/lessons
+```
+
+**Supported manifests (v2.3.0)**: `package.json`, `requirements.txt`, `pyproject.toml`, `Pipfile`, `Cargo.toml`, `go.mod`, `Gemfile`, `composer.json`. Top-level only; monorepos are not supported in v2.3.0.
+
+**Path semantics**: Relative paths are resolved from the current working directory. The target must be a directory — passing a file will exit with an error.
+
+**Framework hierarchy**: Parent frameworks are automatically included. For example, a Next.js project also matches `[react]` lessons; a Nuxt project also matches `[vue]` lessons.
+
+**Output**: In `--json` mode, a `stack` field is added at top level **only when `--for` is specified**:
+
+```json
+{
+  "mode": "analyze",
+  "tags": [...],
+  "stack": {
+    "projectDir": "/abs/path/to/project",
+    "languages": ["javascript"],
+    "technologies": ["react", "next", "typescript"],
+    "sources": ["package.json"],
+    "hardTags": ["[react]", "[next]", "[nextjs]", "[typescript]", "[javascript]"],
+    "softTags": ["[hooks]", "[ssr]", "[frontend]", "[types]"],
+    "errors": []
+  }
+}
+```
+
+When `--for` is not specified, the JSON output is byte-for-byte identical to v2.2.x.
 
 ## Lesson File Format
 

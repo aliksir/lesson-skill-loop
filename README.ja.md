@@ -59,7 +59,46 @@ claude-skill-loop /path/to/your/lessons
 | `--json` | JSON形式で出力（スクリプト連携・CI向け） |
 | `--dir <path>` | 教訓ディレクトリを指定（位置引数の代わり） |
 | `--skills-dir <path>` | スキルディレクトリを指定 |
+| `--for <path>` | **(v2.3.0+)** `<path>` で検出したスタックに関連する教訓のみ表示。下記「スタック対応フィルタ」参照 |
 | `--threshold <n>` | スキル化提案の閾値（デフォルト: 3） |
+
+## スタック対応フィルタ（`--for`、v2.3.0+）
+
+`--for <project-path>` は対象プロジェクトの技術スタックをマニフェストファイルから検出し、そのスタックに関連する教訓のみを表示します。「このプロジェクトで気をつけるべき過去の失敗」を浮上させる機能で、汎用スキルを配布する `autoskills` 等とは補完関係にあります。
+
+```bash
+# ./my-next-app のスタックに関連する教訓のみ表示
+claude-skill-loop --for ./my-next-app ~/.claude/lessons
+
+# 任意のモードと組み合わせ可能
+claude-skill-loop --all --for ./my-rust-service ~/.claude/lessons
+```
+
+**対応マニフェスト（v2.3.0）**: `package.json` / `requirements.txt` / `pyproject.toml` / `Pipfile` / `Cargo.toml` / `go.mod` / `Gemfile` / `composer.json`。トップレベルのみ走査（モノレポ非対応、v2.4.0 で対応予定）。
+
+**パスの解釈**: 相対パスはカレントディレクトリ基準で解決されます。対象はディレクトリ必須（ファイルパスはエラー）。
+
+**フレームワーク階層**: 親フレームワークのタグも自動的に含まれます。例: Next.js プロジェクトは `[react]` 教訓も、Nuxt プロジェクトは `[vue]` 教訓も表示対象になります。
+
+**出力**: `--json` モードでは、`--for` 指定時のみトップレベルに `stack` フィールドが追加されます:
+
+```json
+{
+  "mode": "analyze",
+  "tags": [...],
+  "stack": {
+    "projectDir": "/abs/path/to/project",
+    "languages": ["javascript"],
+    "technologies": ["react", "next", "typescript"],
+    "sources": ["package.json"],
+    "hardTags": ["[react]", "[next]", "[nextjs]", "[typescript]", "[javascript]"],
+    "softTags": ["[hooks]", "[ssr]", "[frontend]", "[types]"],
+    "errors": []
+  }
+}
+```
+
+`--for` 未指定時の JSON 出力は v2.2.x と 1 byte も変わりません（既存 CI 連携を保護）。
 
 ## 教訓ファイルの書き方
 
