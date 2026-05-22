@@ -8,7 +8,7 @@
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -1023,5 +1023,70 @@ describe('v2.3.0: extras 付き依存の正確な抽出（回帰テスト）', (
     assert.ok(json.stack.technologies.includes('fastapi'));
     assert.ok(json.stack.technologies.includes('pydantic'));
     assert.ok(!json.stack.technologies.includes('fastapi[standard]'));
+  });
+});
+
+// =============================================================================
+// v2.4.0: --merge-twice (2度発火統合候補検出、dry-run)
+// =============================================================================
+
+describe('v2.4.0: --merge-twice 基本動作', () => {
+  test('--merge-twice: JSON 出力スキーマが想定通り', () => {
+    const dir = makeTempLessons({
+      'a.md': '# Test A\n`[harness]`\n\n## 概要\n\nrate limiting and exponential backoff for the api integration test.\n',
+      'b.md': '# Test B\n`[harness]`\n\n## 概要\n\nrate limiting check and exponential backoff retry logic for api integration.\n',
+    });
+    const r = run(['--merge-twice', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.mode, 'merge-twice');
+    assert.ok(json.threshold);
+    assert.equal(typeof json.threshold.tagOverlapMin, 'number');
+    assert.equal(typeof json.threshold.keywordJaccardMin, 'number');
+    assert.equal(typeof json.days, 'number');
+    assert.ok(Array.isArray(json.candidates));
+    assert.equal(typeof json.totalCandidates, 'number');
+  });
+
+  test('--merge-twice: 同テーマペアを検出する (英数字共通多めの fixture)', () => {
+    // 共通キーワード豊富な lesson ペア (英数字主体で Jaccard 0.20 を超えるよう設計)
+    const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
+    const dir = makeTempLessons({
+      'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
+      'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
+    });
+    const r = run(['--merge-twice', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.ok(json.candidates.length >= 1, `期待: 候補 1 件以上、実際: ${json.candidates.length}\n${r.stdout}`);
+    const first = json.candidates[0];
+    assert.ok(Array.isArray(first.sharedCategoryTags));
+    assert.ok(first.sharedCategoryTags.length >= 1);
+    assert.ok(typeof first.jaccardScore === 'number');
+    assert.ok(first.jaccardScore >= json.threshold.keywordJaccardMin);
+  });
+
+  test('--merge-twice: --days で「新規」ウィンドウが効く (古い mtime は新規扱いから外れる)', () => {
+    const dir = makeTempLessons({
+      'recent.md': '# Recent\n`[harness]`\n\n## 概要\n\nrate limiting exponential backoff retry api integration.\n',
+      'old.md':    '# Old\n`[harness]`\n\n## 概要\n\nrate limiting exponential backoff retry api integration old version.\n',
+    });
+    // old.md の mtime を 60 日前に設定
+    const old = new Date(Date.now() - 60 * 86400 * 1000);
+    utimesSync(join(dir, 'old.md'), old, old);
+
+    const r = run(['--merge-twice', '--days', '30', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.days, 30);
+    // newFile に old.md が含まれないこと (newLessons には入らないはず)
+    for (const c of json.candidates) {
+      assert.ok(!c.newFile.endsWith('old.md'), `old.md は新規扱いされてはいけない: newFile=${c.newFile}`);
+    }
+  });
+
+  test('--merge-twice: --help に説明が表示される', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--merge-twice'), `--help に --merge-twice が含まれていない:\n${stdout}`);
   });
 });

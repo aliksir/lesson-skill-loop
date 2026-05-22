@@ -60,6 +60,8 @@ claude-skill-loop /path/to/your/lessons
 | `--dir <path>` | 教訓ディレクトリを指定（位置引数の代わり） |
 | `--skills-dir <path>` | スキルディレクトリを指定 |
 | `--for <path>` | **(v2.3.0+)** `<path>` で検出したスタックに関連する教訓のみ表示。下記「スタック対応フィルタ」参照 |
+| `--merge-twice` | **(v2.4.0+)** 同テーマで重複している教訓ペアを検出（統合候補）。下記「同テーマ統合候補検出」参照 |
+| `--days <n>` | **(v2.4.0+)** `--merge-twice` での「新規 lesson」判定ウィンドウ（mtime ベース、デフォルト: 30 日） |
 | `--threshold <n>` | スキル化提案の閾値（デフォルト: 3） |
 
 ## スタック対応フィルタ（`--for`、v2.3.0+）
@@ -99,6 +101,42 @@ claude-skill-loop --all --for ./my-rust-service ~/.claude/lessons
 ```
 
 `--for` 未指定時の JSON 出力は v2.2.x と 1 byte も変わりません（既存 CI 連携を保護）。
+
+## 同テーマ統合候補検出（`--merge-twice`、v2.4.0+）
+
+`--merge-twice` は同テーマで重複している教訓ペアを検出し、統合候補として浮上させます。[`claude-smart`](https://github.com/ReflexioAI/claude-smart) の「2 度発火統合（twice-fire merge）」思想を取り込んだ機能で、同テーマで 2 度教訓が記録された = 単一ファイルに統合すべきシグナル、として扱います。
+
+```bash
+# 教訓ディレクトリ内の統合候補を検出
+claude-skill-loop --merge-twice ~/.claude/lessons
+
+# 「新規」ウィンドウを直近 7 日に絞る
+claude-skill-loop --merge-twice --days 7 ~/.claude/lessons
+
+# 機械可読 JSON 出力
+claude-skill-loop --merge-twice --json ~/.claude/lessons
+```
+
+**判定ルール**: 以下の **両条件** を満たすペアを同テーマとして検出:
+1. **主タグ一致**: カテゴリタグが 1 件以上共通（カテゴリタグ集合は `dev-lessons.md` から動的に導出、フォールバックは全 `[tag]` の和集合）
+2. **キーワード Jaccard ≥ 0.20**: タイトル + 最初の H2 セクション本文から ASCII 英数字トークン + 連続 CJK スパンを抽出
+
+**判定対象範囲**: `(新規 × 新規) ∪ (新規 × 既存)` の全ペア（「新規」= mtime が `--days` 以内、デフォルト 30 日）。新規同士の同テーマも検出可能。
+
+**出力例（テキストモード）**:
+```
+🔗 統合候補検出 (--merge-twice、直近 30 日 vs 既存)
+================================================
+カテゴリタグ集合: 69 件
+新規 lesson: 21 件 / 全 lesson: 25 件
+
+✅ 統合候補なし
+   閾値: 主タグ一致 >= 1 AND キーワード Jaccard >= 0.2
+```
+
+**dry-run のみ**: 本リリースは候補浮上のみでファイルは一切変更しません。出力を見て手動で統合判断してください。`--execute` モード（実統合）は v2.4.1 で対応予定。
+
+**既知の限界**: 日本語短文の教訓（日本語タイトル + 短い概要）では、人間判断で明らかに同テーマでも Jaccard ≤ 0.10 になるケースあり。shared category tags の Jaccard 分子への算入も v2.4.1 で改善予定。
 
 ## 教訓ファイルの書き方
 

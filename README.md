@@ -60,6 +60,8 @@ Record lessons during work, then analyze with `/skill-loop` to close the feedbac
 | `--dir <path>` | Specify lessons directory (alternative to positional arg) |
 | `--skills-dir <path>` | Specify skills directory |
 | `--for <path>` | **(v2.3.0+)** Filter lessons by stack detected in `<path>`. See "Stack-aware filtering" below. |
+| `--merge-twice` | **(v2.4.0+)** Detect duplicate-theme lesson candidates that should be merged. See "Merge-twice detection" below. |
+| `--days <n>` | **(v2.4.0+)** New-lesson window for `--merge-twice` mode, default: `30` (days, by mtime). |
 | `--threshold <n>` | Skill proposal threshold, default: `3` |
 
 ## Stack-aware filtering (`--for`, v2.3.0+)
@@ -99,6 +101,42 @@ claude-skill-loop --all --for ./my-rust-service ~/.claude/lessons
 ```
 
 When `--for` is not specified, the JSON output is byte-for-byte identical to v2.2.x.
+
+## Merge-twice detection (`--merge-twice`, v2.4.0+)
+
+`--merge-twice` detects pairs of lessons that cover the same theme and should be merged into a single lesson file. Inspired by the "twice-fire merge" concept from [`claude-smart`](https://github.com/ReflexioAI/claude-smart) — when a lesson is recorded twice on the same theme, it's a signal to consolidate.
+
+```bash
+# Detect merge candidates in the lessons directory
+claude-skill-loop --merge-twice ~/.claude/lessons
+
+# Tighten the new-lesson window to the last 7 days
+claude-skill-loop --merge-twice --days 7 ~/.claude/lessons
+
+# Machine-readable JSON output
+claude-skill-loop --merge-twice --json ~/.claude/lessons
+```
+
+**Detection rule**: A pair is flagged as same-theme if **both** conditions hold:
+1. **Shared primary tag**: at least 1 category tag matches (category tags are derived dynamically from `dev-lessons.md`, with fallback to the union of all `[tag]` entries).
+2. **Keyword Jaccard ≥ 0.20**: keyword sets are extracted from title + first H2 section body, using ASCII-alphanumeric tokens + contiguous CJK spans.
+
+**Scope**: All `(new × new) ∪ (new × existing)` pairs, where "new" = mtime within the last `--days` window (default 30).
+
+**Output (text mode)**:
+```
+🔗 統合候補検出 (--merge-twice、直近 30 日 vs 既存)
+================================================
+カテゴリタグ集合: 69 件
+新規 lesson: 21 件 / 全 lesson: 25 件
+
+✅ 統合候補なし
+   閾値: 主タグ一致 >= 1 AND キーワード Jaccard >= 0.2
+```
+
+**Dry-run only**: This release surfaces candidates but does not modify any files. Use the output to decide which lessons to merge manually. `--execute` mode is planned for v2.4.1.
+
+**Known limitations**: Japanese short-text lessons (Japanese titles + short summaries) may yield Jaccard ≤ 0.10 even for clear same-theme pairs. Shared category tags are not yet counted in the Jaccard numerator; both are planned for v2.4.1.
 
 ## Lesson File Format
 

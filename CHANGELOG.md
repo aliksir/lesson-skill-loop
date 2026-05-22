@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.4.0] - 2026-05-22
+
+### Added
+- `--merge-twice`: Detect duplicate-theme lesson candidates that should be merged into a single lesson file. Implements the "twice-fire merge" concept from `claude-smart` (Apache 2.0, ReflexioAI) — when two lessons cover the same theme, they are surfaced as a merge candidate.
+- `--days <N>`: New-window for `--merge-twice` mode (default: 30 days, by mtime). Lessons newer than `<N>` days are treated as "new", older as "existing".
+- `--json` output for `--merge-twice` mode (machine-readable candidate pairs with shared tags and Jaccard score).
+
+### Algorithm
+- Same-theme detection: shared primary tag (1+ category tag match) AND keyword Jaccard similarity ≥ 0.20.
+- Keyword extraction from: title + first H2 section body. ASCII-alphanumeric tokens + contiguous CJK spans.
+- Category tag set: dynamic from `dev-lessons.md` index (with fallback to union of all `[tag]` entries).
+- Detection scope: new-lesson × (new-lesson + existing-lesson) for full pair coverage (catches "new + new" same-theme pairs too).
+
+### Tests
+- 4 new tests added: `--merge-twice` JSON schema, same-theme detection (English fixture), `--days` window filtering, `--help` display.
+- Total: 73 → 77 tests, all passing.
+
+### Known limitations (planned for v2.4.1)
+- Japanese short-text feature scarcity: titles + summaries in Japanese can yield Jaccard ≤ 0.10 even for human-judged same-theme pairs (e.g. `cakephp-3-to-4-compat-summary` vs `cakephp-updateall-timestamp-behavior` measured at 0.05).
+- Shared category tags are not currently counted in the Jaccard numerator.
+- `--jaccard-min` CLI flag not yet exposed (threshold hardcoded at 0.20).
+- `--execute` real-merge mode not yet implemented (this release is dry-run only).
+
+### Compatibility
+- Backward compatible: existing modes (analyze, sync, health, map, autoskills, related, --for) behave byte-for-byte identically.
+- Zero new dependencies maintained.
+
 ## [2.3.0] - 2026-04-12
 
 ### Added

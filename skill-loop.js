@@ -10,6 +10,7 @@
 //   node skill-loop.js --health [lessons_dir]     # スキル健全性チェック
 //   node skill-loop.js --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
 //   node skill-loop.js --all [lessons_dir]        # 全部実行
+//   node skill-loop.js --merge-twice [lessons_dir]  # v2.4.0: 2度発火統合候補検出 (dry-run)
 //   node skill-loop.js --for <project-dir>        # v2.3.0: プロジェクトスタック検出+教訓フィルタ
 //   node skill-loop.js --json [lessons_dir]       # JSON形式出力
 //   node skill-loop.js --self-update              # ツール自身を最新版に更新
@@ -32,6 +33,7 @@ let lessonsDir = '';
 let skillsDir = '';
 let projectDir = ''; // v2.3.0: --for <path>
 let threshold = 3;
+let mergeTwiceDays = 30; // v2.4.0: --merge-twice の "新規" ウィンドウ
 const selfUpdateMode = args.includes('--self-update');
 const noVersionCheck = args.includes('--no-version-check');
 
@@ -47,10 +49,13 @@ Modes:
   --health           Check skill freshness and evidence strength
   --map              Full traceability: which lessons back which skills
   --all              Run all modes
+  --merge-twice      v2.4.0+: Detect lesson pairs likely to cover the same theme
+                     (claude-smart 思想1 "2度発火統合" の dry-run 検出のみ)
 
 Options:
   --dir <path>       Lessons directory (or pass as positional arg)
   --skills-dir <path> Skills directory (default: ~/.claude/skills)
+  --days <N>         v2.4.0+: --merge-twice の "新規" 判定ウィンドウ (mtime N 日以内、default: 30)
   --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
                      Relative paths are resolved from the current working directory.
                      The target must be a directory (not a file).
@@ -167,6 +172,11 @@ for (let i = 0; i < args.length; i++) {
     case '--health':  mode = 'health';  break;
     case '--map':     mode = 'map';     break;
     case '--all':     mode = 'all';     break;
+    case '--merge-twice': mode = 'merge-twice'; break;
+    case '--days':
+      // v2.4.0: --merge-twice の対象ウィンドウ (デフォルト 30)
+      mergeTwiceDays = parseInt(args[++i], 10) || 30;
+      break;
     case '--json':    jsonMode = true;  break;
     case '--dir':
       // args[++i] が配列末尾を超えた場合は undefined → '' にフォールバック（意図的）
@@ -1254,6 +1264,308 @@ function doMap() {
   console.log('   → /skill-creator で作成できます。');
 }
 
+// --- モード5: v2.4.0 --merge-twice (2度発火統合候補検出、dry-run only) ---
+//
+// claude-smart 思想1「2度発火統合」の dry-run 実装。
+// 同テーマと推定される lesson ペアを検出してレポートする (execute は v2.4.1 以降)。
+//
+// アルゴリズム:
+//   - LESSON_FILES を mtime で 2 分割: "新規" (--days N 日以内) / "既存" (それ以外)
+//   - 各ファイルから (allTags / categoryTags / keywords) を抽出
+//   - 全 (新規 × 既存) ペアで isSameTheme() 判定
+//   - true ペアを統合候補としてレポート
+//
+// 同テーマ判定:
+//   - 主タグ一致: shared categoryTags.size >= 1
+//   - キーワード一致率 (Jaccard): intersection.size / union.size >= 0.20
+
+/**
+ * dev-lessons.md から「カテゴリタグ: `[xxx]` ...」行を抽出してカテゴリタグ集合を返す。
+ * 見つからない場合は fallback ハードコードを返す。
+ * @param {string} lessonsDir 教訓ディレクトリ
+ * @returns {Set<string>} カテゴリタグ集合 (例: Set(['[security]', '[harness]']))
+ */
+function extractCategoryTags(lessonsDir) {
+  const FALLBACK = new Set([
+    '[security]', '[windows]', '[agent]', '[network]', '[frontend]',
+    '[abnormal]', '[harness]', '[planning]', '[invariant]', '[review]',
+    '[php]', '[cakephp]', '[aws]', '[monitoring]', '[silent-failure]',
+    '[migration]', '[orm]', '[spa]', '[architecture]', '[hooks]',
+    '[claude-code]', '[time-estimation-banned]', '[reference]', '[git]',
+    '[external-tool]', '[external-repo-no-touch]', '[external-cli-assumption-check]',
+    '[external-tool-target-divergence]', '[ai-policy]', '[incident]'
+  ]);
+
+  // dev-lessons.md は lessonsDir の親ディレクトリにある想定
+  const candidates = [
+    join(lessonsDir, '..', 'dev-lessons.md'),
+    join(lessonsDir, 'dev-lessons.md'),
+  ];
+
+  // 動的判定 + fallback の union を返す
+  // 設計判断 (2026-05-22): dev-lessons.md は手動更新でタグ集合が常に最新と限らないため、
+  // fallback ハードコードの既知タグ ([php] [cakephp] 等) を補完として追加する
+  const tags = new Set(FALLBACK);
+
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      const content = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+      // 「**xxxタグ**: `[a]` `[b]` ...」形式の全行 (カテゴリ / 技術 / プロジェクト / 参照) を集計
+      // 同テーマ判定では分類別の意味は問わず「dev-lessons.md がタグとして認知している」集合を使う
+      const lineRe = /\*\*[^*\n]*タグ\*\*:\s*([^\n]+)/g;
+      const tagPattern = /`(\[[a-zA-Z0-9_-]{2,}\])`/g;
+      let lineMatch;
+      while ((lineMatch = lineRe.exec(content)) !== null) {
+        let match;
+        tagPattern.lastIndex = 0;
+        while ((match = tagPattern.exec(lineMatch[1])) !== null) {
+          tags.add(match[1]);
+        }
+      }
+    } catch { /* 読み取り失敗時は fallback のみで継続 */ }
+  }
+
+  return tags;
+}
+
+/**
+ * テキストからキーワードを抽出 (英数字 3 文字以上 + 連続漢字 2 文字以上)。
+ * stop word 除外。
+ * @param {string} text
+ * @returns {Set<string>}
+ */
+function extractKeywords(text) {
+  const STOP_WORDS = new Set([
+    'the', 'and', 'for', 'with', 'this', 'that', 'from', 'have', 'has',
+    'are', 'was', 'were', 'will', 'would', 'should', 'could', 'can',
+    'not', 'but', 'all', 'any', 'one', 'two', 'three',
+    'する', 'した', 'して', 'こと', 'もの', 'ため', 'よう', 'これ', 'それ',
+    'あれ', 'どれ', 'なる', 'なっ', 'いる', 'ある', 'です', 'ます',
+  ]);
+  const keywords = new Set();
+
+  // 英数字単語 (3 文字以上、ハイフン可)
+  for (const m of text.matchAll(/[a-zA-Z][a-zA-Z0-9-]{2,}/g)) {
+    const w = m[0].toLowerCase();
+    if (!STOP_WORDS.has(w)) keywords.add(w);
+  }
+  // 連続漢字スパン (2 文字以上、近似名詞抽出)
+  // U+4E00 - U+9FFF が漢字範囲
+  for (const m of text.matchAll(/[一-鿿]{2,}/g)) {
+    const w = m[0];
+    if (!STOP_WORDS.has(w)) keywords.add(w);
+  }
+  return keywords;
+}
+
+/**
+ * lesson ファイルから判定用メタデータを抽出。
+ * @param {string} filePath
+ * @param {Set<string>} categoryTagSet カテゴリタグ集合
+ * @returns {{ filePath: string, mtime: Date, title: string, firstParagraph: string, allTags: Set<string>, categoryTags: Set<string>, keywords: Set<string> } | null}
+ */
+function extractLessonMeta(filePath, categoryTagSet) {
+  let content;
+  try {
+    content = readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  } catch {
+    return null;
+  }
+
+  let mtime;
+  try { mtime = statSync(filePath).mtime; } catch { mtime = new Date(0); }
+
+  // タイトル抽出 (最初の # 行、なければ basename)
+  const titleMatch = content.match(/^#\s+(.+?)\s*$/m);
+  const title = titleMatch ? titleMatch[1] : basename(filePath, '.md');
+
+  // 概要範囲: タイトル直後 〜 最初の H2 セクション本文 (## 概要 1 つ分のみ)
+  // 設計判断 (2026-05-22 実装):
+  //   - タイトル直後だけ → タグ列のみで特徴不足
+  //   - H3 まで → ファイル構成で概要セクション数が異なると不均衡 (例: ナゼナゼ多いと膨らむ)
+  //   - "## xxx" 1 つ分まで → 「タイトル + 最初の H2 セクション本文」でバランス
+  let firstParagraph = '';
+  if (titleMatch) {
+    const afterTitle = content.slice(titleMatch.index + titleMatch[0].length);
+    // 最初の H2 を探し、次の H2 までを概要範囲として採用
+    const firstH2 = afterTitle.match(/\n##\s/);
+    if (firstH2) {
+      const afterFirstH2 = afterTitle.slice(firstH2.index + 1);
+      const secondH2 = afterFirstH2.slice(3).match(/\n##\s/);
+      firstParagraph = secondH2
+        ? afterFirstH2.slice(0, secondH2.index + 3)
+        : afterFirstH2.slice(0, 2000);
+    } else {
+      firstParagraph = afterTitle.slice(0, 2000);
+    }
+  } else {
+    firstParagraph = content.slice(0, 2000);
+  }
+
+  // タグ集合 (ファイル全体から [xxx] パターン抽出)
+  const allTags = new Set();
+  const EXCLUDED_TAGS = new Set(['[x]', '[X]', '[N/A]', '[na]', '[NA]', '[ ]']);
+  for (const m of content.matchAll(/\[[a-zA-Z0-9_-]{2,}\]/g)) {
+    if (!EXCLUDED_TAGS.has(m[0])) allTags.add(m[0]);
+  }
+
+  // カテゴリタグ集合
+  const categoryTags = new Set();
+  for (const t of allTags) {
+    if (categoryTagSet.has(t)) categoryTags.add(t);
+  }
+
+  // キーワード抽出 (タイトル + 最初の段落から)
+  const keywords = extractKeywords(`${title}\n${firstParagraph}`);
+
+  return { filePath, mtime, title, firstParagraph, allTags, categoryTags, keywords };
+}
+
+/**
+ * 2 つの lesson メタから同テーマ判定。
+ * @param {object} metaA
+ * @param {object} metaB
+ * @param {{ tagOverlapMin?: number, keywordJaccardMin?: number }} opts
+ * @returns {{ match: boolean, sharedCategoryTags?: string[], sharedKeywords?: string[], jaccardScore?: number, reason?: string }}
+ */
+// v2.4.0 初版実用閾値。設計書 (20260520) の heuristic は 0.30 だったが、実 25 lessons の検証で
+// 関連の強いペアでも Jaccard 0.20-0.25 程度のため 0.20 に下方修正 (詳細は doMergeTwice() 参照)。
+const DEFAULT_MERGE_TWICE_JACCARD_MIN = 0.20;
+const DEFAULT_MERGE_TWICE_TAG_OVERLAP_MIN = 1;
+
+function isSameTheme(metaA, metaB, opts = {}) {
+  const tagOverlapMin = opts.tagOverlapMin ?? DEFAULT_MERGE_TWICE_TAG_OVERLAP_MIN;
+  const keywordJaccardMin = opts.keywordJaccardMin ?? DEFAULT_MERGE_TWICE_JACCARD_MIN;
+
+  // Step 1: 主タグ一致
+  const sharedCategoryTags = new Set();
+  for (const t of metaA.categoryTags) {
+    if (metaB.categoryTags.has(t)) sharedCategoryTags.add(t);
+  }
+  if (sharedCategoryTags.size < tagOverlapMin) {
+    return { match: false, reason: 'no_shared_category_tags' };
+  }
+
+  // Step 2: キーワード一致率 (Jaccard)
+  const intersection = new Set();
+  for (const k of metaA.keywords) {
+    if (metaB.keywords.has(k)) intersection.add(k);
+  }
+  const union = new Set([...metaA.keywords, ...metaB.keywords]);
+  if (union.size === 0) {
+    return { match: false, reason: 'no_keywords' };
+  }
+  const jaccard = intersection.size / union.size;
+
+  if (jaccard >= keywordJaccardMin) {
+    return {
+      match: true,
+      sharedCategoryTags: [...sharedCategoryTags],
+      sharedKeywords: [...intersection],
+      jaccardScore: Math.round(jaccard * 1000) / 1000,
+    };
+  }
+  return { match: false, reason: `jaccard_too_low_${jaccard.toFixed(2)}` };
+}
+
+/**
+ * --merge-twice モードの本体。
+ * dry-run only: 統合候補を検出してレポート出力するのみ。
+ * 実統合は v2.4.1 以降の --execute で対応予定。
+ */
+function doMergeTwice() {
+  // 設計書 (20260520) の初版 heuristic は 0.30 だったが、実 lessons (猫軍団 25 ファイル) で動作確認
+  // した結果、関連の強いペアでも Jaccard 0.20-0.25 程度に収まる傾向 (キーワード抽出が英数字+
+  // 連続漢字スパンの近似手段のため)。初版実用閾値は 0.20 に調整、将来 --jaccard-min で
+  // CLI フラグ化検討 (v2.4.1)。
+  // 値は DEFAULT_MERGE_TWICE_* に集約し isSameTheme() のデフォルトとも一致させる (F-B 対処)
+  const tagOverlapMin = DEFAULT_MERGE_TWICE_TAG_OVERLAP_MIN;
+  const keywordJaccardMin = DEFAULT_MERGE_TWICE_JACCARD_MIN;
+  const windowMs = mergeTwiceDays * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - windowMs;
+
+  // カテゴリタグ集合を抽出
+  const categoryTagSet = extractCategoryTags(LESSONS_DIR);
+
+  // 全 lesson メタ抽出
+  const metas = [];
+  for (const f of LESSON_FILES) {
+    const m = extractLessonMeta(f, categoryTagSet);
+    if (m) metas.push(m);
+  }
+
+  // 新規 / 既存に分類
+  // 設計判断 (2026-05-22 実装時): 「新規 vs 全 lesson」を判定対象とする
+  // → 新規同士の同テーマ検出も可能 (claude-smart の 2 度発火思想: 同テーマの教訓が短期間に複数生成される場合も対象)
+  // 設計書 (20260520_lesson-skill-loop-twice-fire.md) の「新規 vs 既存のみ」案からの拡張
+  const newLessons = metas.filter(m => m.mtime.getTime() >= cutoff);
+
+  // 候補ペア検出 (新規 vs (新規+既存)、自分自身は除外、重複ペア除外)
+  const candidates = [];
+  const seenPairs = new Set();
+  for (const a of newLessons) {
+    for (const b of metas) {
+      if (a.filePath === b.filePath) continue;
+      // 重複ペア除外 (a,b と b,a を同一視)
+      const pairKey = [a.filePath, b.filePath].sort().join('|');
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
+
+      const result = isSameTheme(a, b, { tagOverlapMin, keywordJaccardMin });
+      if (result.match) {
+        candidates.push({
+          newFile: a.filePath,
+          existingFile: b.filePath,
+          sharedCategoryTags: result.sharedCategoryTags,
+          sharedKeywords: result.sharedKeywords,
+          jaccardScore: result.jaccardScore,
+        });
+      }
+    }
+  }
+  // jaccardScore 降順でソート
+  candidates.sort((a, b) => b.jaccardScore - a.jaccardScore);
+
+  if (jsonMode) {
+    return {
+      mode: 'merge-twice',
+      threshold: { tagOverlapMin, keywordJaccardMin },
+      days: mergeTwiceDays,
+      candidates,
+      totalCandidates: candidates.length,
+    };
+  }
+
+  console.log(`🔗 統合候補検出 (--merge-twice、直近 ${mergeTwiceDays} 日 vs 既存)`);
+  console.log('================================================');
+  console.log(`カテゴリタグ集合: ${categoryTagSet.size} 件`);
+  console.log(`新規 lesson: ${newLessons.length} 件 / 全 lesson: ${metas.length} 件`);
+  console.log('');
+
+  if (candidates.length === 0) {
+    console.log('✅ 統合候補なし');
+    console.log(`   閾値: 主タグ一致 >= ${tagOverlapMin} AND キーワード Jaccard >= ${keywordJaccardMin}`);
+    return;
+  }
+
+  candidates.forEach((c, idx) => {
+    console.log(`📂 候補ペア #${idx + 1}:`);
+    console.log(`  新規:   ${c.newFile}`);
+    console.log(`  既存:   ${c.existingFile}`);
+    console.log(`  shared カテゴリタグ: ${c.sharedCategoryTags.join(', ')}`);
+    const kw = c.sharedKeywords.slice(0, 8).join(', ');
+    const more = c.sharedKeywords.length > 8 ? ` ... (+${c.sharedKeywords.length - 8})` : '';
+    console.log(`  shared keywords:     ${kw}${more}`);
+    console.log(`  Jaccard score:       ${c.jaccardScore}`);
+    console.log('');
+  });
+
+  console.log('================================================');
+  console.log(`合計候補: ${candidates.length} ペア`);
+  console.log(`💡 次のアクション: 各候補を手動レビューし、統合が妥当なら --execute (v2.4.1+) で実行`);
+}
+
 // --- --all モード ---
 
 function doAll() {
@@ -1393,11 +1705,12 @@ async function main() {
   if (jsonMode) {
     let result;
     switch (mode) {
-      case 'analyze': result = doAnalyze(); break;
-      case 'sync':    result = doSync();    break;
-      case 'health':  result = doHealth();  break;
-      case 'map':     result = doMap();     break;
-      case 'all':     result = doAll();     break;
+      case 'analyze':     result = doAnalyze();     break;
+      case 'sync':        result = doSync();        break;
+      case 'health':      result = doHealth();      break;
+      case 'map':         result = doMap();         break;
+      case 'all':         result = doAll();         break;
+      case 'merge-twice': result = doMergeTwice();  break;
     }
     // v2.3.0: 単体モードでは stack をトップレベルに差し込む（doAll は内部で処理済み）
     if (stackMetadata && mode !== 'all') {
@@ -1406,11 +1719,12 @@ async function main() {
     console.log(JSON.stringify(result, null, 2));
   } else {
     switch (mode) {
-      case 'analyze': doAnalyze(); break;
-      case 'sync':    doSync();    break;
-      case 'health':  doHealth();  break;
-      case 'map':     doMap();     break;
-      case 'all':     doAll();     break;
+      case 'analyze':     doAnalyze();     break;
+      case 'sync':        doSync();        break;
+      case 'health':      doHealth();      break;
+      case 'map':         doMap();         break;
+      case 'all':         doAll();         break;
+      case 'merge-twice': doMergeTwice();  break;
     }
 
     // npmバージョンチェック（--no-version-check / --json では非表示）
