@@ -1330,8 +1330,9 @@ function extractCategoryTags(lessonsDir) {
 }
 
 /**
- * テキストからキーワードを抽出 (英数字 3 文字以上 + 連続漢字 2 文字以上)。
+ * テキストからキーワードを抽出 (英数字 3 文字以上 + 連続漢字 2 文字以上 + カタカナ 2 文字以上)。
  * stop word 除外。
+ * v2.4.1: 日本語短文の特徴量不足対処として、カタカナスパン抽出を追加。
  * @param {string} text
  * @returns {Set<string>}
  */
@@ -1342,6 +1343,9 @@ function extractKeywords(text) {
     'not', 'but', 'all', 'any', 'one', 'two', 'three',
     'する', 'した', 'して', 'こと', 'もの', 'ため', 'よう', 'これ', 'それ',
     'あれ', 'どれ', 'なる', 'なっ', 'いる', 'ある', 'です', 'ます',
+    // v2.4.1 カタカナ高頻度語（false positive 抑制、12 語）
+    'テスト', 'コード', 'ファイル', 'メソッド', 'データ', 'エラー',
+    'ログ', 'ツール', 'モード', 'フラグ', 'スクリプト', 'セッション',
   ]);
   const keywords = new Set();
 
@@ -1353,6 +1357,12 @@ function extractKeywords(text) {
   // 連続漢字スパン (2 文字以上、近似名詞抽出)
   // U+4E00 - U+9FFF が漢字範囲
   for (const m of text.matchAll(/[一-鿿]{2,}/g)) {
+    const w = m[0];
+    if (!STOP_WORDS.has(w)) keywords.add(w);
+  }
+  // v2.4.1: カタカナスパン (2 文字以上、長音符含む)
+  // U+30A0 - U+30FF がカタカナ範囲（長音符 U+30FC, 中黒 U+30FB 含む）
+  for (const m of text.matchAll(/[ァ-ヴー]{2,}/g)) {
     const w = m[0];
     if (!STOP_WORDS.has(w)) keywords.add(w);
   }
@@ -1448,11 +1458,21 @@ function isSameTheme(metaA, metaB, opts = {}) {
   }
 
   // Step 2: キーワード一致率 (Jaccard)
+  // v2.4.1: sharedCategoryTags も Jaccard 分子・分母に算入する。
+  //   - 既存版は keywords のみで計算していたため、shared tag のシグナルが
+  //     スコアに反映されていなかった (Findings v2.4.0 既知の限界 #2)。
+  //   - tag は `tag:` prefix で keywords と名前空間衝突を回避する。
+  //   - 通常 tag 数は 1-3 件、keywords 50-80 件のため影響は小さい (微増方向)。
   const intersection = new Set();
   for (const k of metaA.keywords) {
     if (metaB.keywords.has(k)) intersection.add(k);
   }
+  for (const t of sharedCategoryTags) {
+    intersection.add(`tag:${t}`);
+  }
   const union = new Set([...metaA.keywords, ...metaB.keywords]);
+  for (const t of metaA.categoryTags) union.add(`tag:${t}`);
+  for (const t of metaB.categoryTags) union.add(`tag:${t}`);
   if (union.size === 0) {
     return { match: false, reason: 'no_keywords' };
   }
@@ -1472,13 +1492,13 @@ function isSameTheme(metaA, metaB, opts = {}) {
 /**
  * --merge-twice モードの本体。
  * dry-run only: 統合候補を検出してレポート出力するのみ。
- * 実統合は v2.4.1 以降の --execute で対応予定。
+ * 実統合は v2.4.2 以降の --execute で対応予定。
  */
 function doMergeTwice() {
   // 設計書 (20260520) の初版 heuristic は 0.30 だったが、実 lessons (猫軍団 25 ファイル) で動作確認
   // した結果、関連の強いペアでも Jaccard 0.20-0.25 程度に収まる傾向 (キーワード抽出が英数字+
-  // 連続漢字スパンの近似手段のため)。初版実用閾値は 0.20 に調整、将来 --jaccard-min で
-  // CLI フラグ化検討 (v2.4.1)。
+  // 連続漢字スパン + カタカナスパンの近似手段のため)。初版実用閾値は 0.20 に調整、将来 --jaccard-min で
+  // CLI フラグ化検討 (v2.4.2)。
   // 値は DEFAULT_MERGE_TWICE_* に集約し isSameTheme() のデフォルトとも一致させる (F-B 対処)
   const tagOverlapMin = DEFAULT_MERGE_TWICE_TAG_OVERLAP_MIN;
   const keywordJaccardMin = DEFAULT_MERGE_TWICE_JACCARD_MIN;

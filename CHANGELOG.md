@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.4.1] - 2026-05-24
+
+### Added
+- **Katakana span extraction**: `extractKeywords` now also picks up contiguous katakana spans (2+ chars, U+30A0-U+30FF). This addresses the Japanese short-text feature scarcity from v2.4.0 — Japanese-titled lessons reach the 0.20 Jaccard threshold more reliably.
+- **Katakana stop-words**: 12 high-frequency katakana terms (`テスト` / `コード` / `ファイル` / `メソッド` / `データ` / `エラー` / `ログ` / `ツール` / `モード` / `フラグ` / `スクリプト` / `セッション`) added to `STOP_WORDS` to suppress false positives.
+- **Shared category tags in Jaccard**: `isSameTheme` now includes `sharedCategoryTags` in the Jaccard numerator and the full `categoryTags` set (with `tag:` prefix to avoid keyword collisions) in the denominator. This addresses the v2.4.0 known limitation #2.
+
+### Tests
+- 3 new tests: `--merge-twice` text-mode smoke (candidate format + zero-candidate case), Japanese short-text detection with katakana keywords.
+- Total: 77 → 80 tests, all passing.
+
+### Documentation
+- README.md / README.ja.md: clarified that `--merge-twice` and `--for <project>` are independent — `--for` filtering does **not** apply to `--merge-twice`'s pair detection (v2.4.0 known limitation #3, now explicitly documented).
+- CHANGELOG: deferred `--jaccard-min` CLI flag and `--execute` real-merge mode to v2.4.2.
+
+### Compatibility
+- Backward compatible: existing 77/77 tests pass without modification. Existing modes (analyze, sync, health, map, autoskills, related, --for, --merge-twice without core changes) behave identically.
+- Zero new dependencies maintained.
+
+### Known limitations (still planned for v2.4.2)
+- `--jaccard-min` CLI flag for per-run threshold tuning.
+- `--execute` real-merge mode (this release remains dry-run only).
+- `--merge-twice` × `--for` integration (currently `--for` is ignored by `--merge-twice`).
+
 ## [2.4.0] - 2026-05-22
 
 ### Added

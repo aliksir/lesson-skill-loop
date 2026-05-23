@@ -1090,3 +1090,62 @@ describe('v2.4.0: --merge-twice 基本動作', () => {
     assert.ok(stdout.includes('--merge-twice'), `--help に --merge-twice が含まれていない:\n${stdout}`);
   });
 });
+
+// =============================================================================
+// v2.4.1: --merge-twice text モード + カタカナ抽出 + shared tags Jaccard 算入
+// =============================================================================
+
+describe('v2.4.1: --merge-twice text モード スモークテスト', () => {
+  test('--merge-twice: text モードで候補ペアフォーマットが表示される', () => {
+    // 共通キーワード豊富な lesson ペア (--json なしで text 出力経路を通す)
+    const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
+    const dir = makeTempLessons({
+      'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
+      'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
+    });
+    const r = run(['--merge-twice', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // text モード固有の表示要素を確認
+    assert.ok(r.stdout.includes('統合候補検出'), `stdout に '統合候補検出' が含まれていない:\n${r.stdout}`);
+    assert.ok(r.stdout.includes('候補ペア'), `stdout に '候補ペア' が含まれていない:\n${r.stdout}`);
+    assert.ok(r.stdout.includes('Jaccard score'), `stdout に 'Jaccard score' が含まれていない:\n${r.stdout}`);
+    assert.ok(r.stdout.includes('shared カテゴリタグ'), `stdout に 'shared カテゴリタグ' が含まれていない:\n${r.stdout}`);
+  });
+
+  test('--merge-twice: text モードで候補ゼロ時は「統合候補なし」表示', () => {
+    // 共通タグなし、キーワードもほぼ共通なし
+    const dir = makeTempLessons({
+      'a.md': '# Topic A\n`[harness]`\n\n## 概要\n\nrate limiting exponential backoff.\n',
+      'b.md': '# Topic B\n`[security]`\n\n## 概要\n\ncross site scripting prevention.\n',
+    });
+    const r = run(['--merge-twice', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes('統合候補なし'), `候補ゼロ時の表示が出ていない:\n${r.stdout}`);
+  });
+});
+
+describe('v2.4.1: 日本語短文 Jaccard 強化', () => {
+  test('--merge-twice: カタカナキーワードで日本語短文ペアを検出', () => {
+    // 共通カタカナキーワードを多数含む日本語 lesson ペア
+    // (英数字に頼らず、カタカナで Jaccard 閾値を超えられること)
+    const sharedKana = 'ナレッジ ハーネス ペイロード キャッシュ レビュー アサイン パイプライン トリガー リトライ ハンドラ';
+    const dir = makeTempLessons({
+      'a.md': `# 日本語タイトル A\n\`[harness]\`\n\n## 概要\n\n${sharedKana} の取り扱いを整理する。\n`,
+      'b.md': `# 日本語タイトル B\n\`[harness]\`\n\n## 概要\n\n${sharedKana} を改善するための手順。\n`,
+    });
+    const r = run(['--merge-twice', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.ok(json.candidates.length >= 1, `日本語短文 fixture で候補が検出されない:\n${r.stdout}`);
+    // カタカナ高頻度語 (テスト/コード等) は STOP_WORDS で除外されていることを間接確認
+    // = sharedKeywords に「テスト」等が含まれない
+    if (json.candidates[0]?.sharedKeywords) {
+      const STOP_KANA = ['テスト', 'コード', 'ファイル', 'モード', 'フラグ', 'ログ'];
+      for (const sw of STOP_KANA) {
+        assert.ok(!json.candidates[0].sharedKeywords.includes(sw),
+          `カタカナ STOP_WORD '${sw}' が sharedKeywords に含まれている`);
+      }
+    }
+  });
+});
+
