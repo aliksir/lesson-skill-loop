@@ -1149,3 +1149,128 @@ describe('v2.4.1: 日本語短文 Jaccard 強化', () => {
   });
 });
 
+// =============================================================================
+// v2.4.2: --jaccard-min CLI override
+// =============================================================================
+
+describe('v2.4.2: --jaccard-min CLI', () => {
+  const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
+  const makeMergePair = () => makeTempLessons({
+    'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
+    'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
+  });
+
+  test('--jaccard-min 0.99: 高閾値で候補ゼロ', () => {
+    const dir = makeMergePair();
+    const r = run(['--merge-twice', '--jaccard-min', '0.99', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.threshold.keywordJaccardMin, 0.99, '閾値が CLI 指定値で上書きされていない');
+    assert.equal(json.totalCandidates, 0, `高閾値 0.99 で候補ゼロが期待値だが ${json.totalCandidates} 件:\n${r.stdout}`);
+  });
+
+  test('--jaccard-min 0.01: 低閾値で候補が検出される', () => {
+    const dir = makeMergePair();
+    const r = run(['--merge-twice', '--jaccard-min', '0.01', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.threshold.keywordJaccardMin, 0.01);
+    assert.ok(json.totalCandidates >= 1, `低閾値 0.01 で候補 1 件以上が期待値:\n${r.stdout}`);
+  });
+
+  test('--jaccard-min 1.5: 範囲外で exit 1', () => {
+    const dir = makeMergePair();
+    const r = run(['--merge-twice', '--jaccard-min', '1.5', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 1, `範囲外で exit 1 期待、実際: ${r.status}`);
+    assert.match(r.stderr, /must be a number between 0\.0 and 1\.0/);
+  });
+
+  test('--jaccard-min abc: 非数値で exit 1', () => {
+    const dir = makeMergePair();
+    const r = run(['--merge-twice', '--jaccard-min', 'abc', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 1, `非数値で exit 1 期待、実際: ${r.status}`);
+    assert.match(r.stderr, /must be a number between 0\.0 and 1\.0/);
+  });
+
+  test('--jaccard-min 未指定: デフォルト 0.20 維持 (後方互換)', () => {
+    const dir = makeMergePair();
+    const r = run(['--merge-twice', '--json', '--no-version-check'], { env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const json = JSON.parse(r.stdout);
+    assert.equal(json.threshold.keywordJaccardMin, 0.20, `デフォルト 0.20 が維持されていない: ${json.threshold.keywordJaccardMin}`);
+  });
+});
+
+// =============================================================================
+// v2.4.2: --execute (merge-plan.json 書き出し)
+// =============================================================================
+
+describe('v2.4.2: --execute merge-plan.json', () => {
+  const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
+  const makeMergePair = () => makeTempLessons({
+    'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
+    'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
+  });
+
+  test('--execute: merge-plan.json が CWD に書き出される', () => {
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({}); // 空の一時 CWD
+    const r = run(['--merge-twice', '--execute', '--no-version-check'], { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const planPath = join(cwd, 'merge-plan.json');
+    assert.ok(existsSync(planPath), `merge-plan.json が CWD に書き出されていない: ${planPath}\nstdout: ${r.stdout}`);
+  });
+
+  test('--execute: JSON 形式 {version, generated_at, threshold, candidates}', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(['--merge-twice', '--execute', '--no-version-check'], { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const plan = JSON.parse(readFileSync(join(cwd, 'merge-plan.json'), 'utf-8'));
+    assert.equal(plan.version, '2.4.2');
+    assert.match(plan.generated_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(plan.threshold);
+    assert.equal(typeof plan.threshold.keywordJaccardMin, 'number');
+    assert.equal(typeof plan.totalCandidates, 'number');
+    assert.ok(Array.isArray(plan.candidates));
+    if (plan.candidates.length > 0) {
+      assert.equal(plan.candidates[0].action, 'TBD', '各候補に action: "TBD" が付与されていない');
+    }
+  });
+
+  test('--execute なし: merge-plan.json は書き出されない (後方互換)', () => {
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(['--merge-twice', '--no-version-check'], { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.equal(existsSync(join(cwd, 'merge-plan.json')), false, '--execute なしで merge-plan.json が書き出されている');
+  });
+
+  test('--execute + --jaccard-min: 両フラグ組み合わせで threshold が JSON に反映', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(['--merge-twice', '--execute', '--jaccard-min', '0.05', '--no-version-check'], { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const plan = JSON.parse(readFileSync(join(cwd, 'merge-plan.json'), 'utf-8'));
+    assert.equal(plan.threshold.keywordJaccardMin, 0.05, `--jaccard-min 0.05 が plan に反映されていない: ${plan.threshold.keywordJaccardMin}`);
+  });
+});
+
+// =============================================================================
+// v2.4.2: --help に新フラグ表示
+// =============================================================================
+
+describe('v2.4.2: --help に新フラグ', () => {
+  test('--help: --jaccard-min が含まれる', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--jaccard-min'), `--help に --jaccard-min が含まれていない:\n${stdout}`);
+  });
+
+  test('--help: --execute が含まれる', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--execute'), `--help に --execute が含まれていない:\n${stdout}`);
+  });
+});
+

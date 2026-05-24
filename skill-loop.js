@@ -17,7 +17,7 @@
 //
 // EvoSkill論文（arxiv:2603.02766）の「失敗→スキル発見→改善」を実装。
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -34,6 +34,8 @@ let skillsDir = '';
 let projectDir = ''; // v2.3.0: --for <path>
 let threshold = 3;
 let mergeTwiceDays = 30; // v2.4.0: --merge-twice の "新規" ウィンドウ
+let jaccardMin = null;   // v2.4.2: --jaccard-min CLI override (null = DEFAULT_MERGE_TWICE_JACCARD_MIN 使用)
+let executeMode = false; // v2.4.2: --execute で merge-plan.json 書き出し (--merge-twice 時のみ)
 const selfUpdateMode = args.includes('--self-update');
 const noVersionCheck = args.includes('--no-version-check');
 
@@ -56,6 +58,9 @@ Options:
   --dir <path>       Lessons directory (or pass as positional arg)
   --skills-dir <path> Skills directory (default: ~/.claude/skills)
   --days <N>         v2.4.0+: --merge-twice の "新規" 判定ウィンドウ (mtime N 日以内、default: 30)
+  --jaccard-min <N>  v2.4.2+: --merge-twice の Jaccard 類似度下限を上書き (0.0-1.0、default: 0.20)
+  --execute          v2.4.2+: --merge-twice 検出結果を merge-plan.json として CWD に書き出し
+                     (実マージは未実装、merge-plan.json は手動レビュー or 別ツール用の中間出力)
   --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
                      Relative paths are resolved from the current working directory.
                      The target must be a directory (not a file).
@@ -176,6 +181,21 @@ for (let i = 0; i < args.length; i++) {
     case '--days':
       // v2.4.0: --merge-twice の対象ウィンドウ (デフォルト 30)
       mergeTwiceDays = parseInt(args[++i], 10) || 30;
+      break;
+    case '--jaccard-min': {
+      // v2.4.2: --merge-twice の Jaccard 類似度下限を上書き (0.0-1.0)
+      const raw = args[++i];
+      const v = parseFloat(raw);
+      if (!Number.isFinite(v) || v < 0.0 || v > 1.0) {
+        console.error(`Error: --jaccard-min must be a number between 0.0 and 1.0 (got: ${raw})`);
+        process.exit(1);
+      }
+      jaccardMin = v;
+      break;
+    }
+    case '--execute':
+      // v2.4.2: --merge-twice 結果を merge-plan.json として書き出す (実マージは未実装)
+      executeMode = true;
       break;
     case '--json':    jsonMode = true;  break;
     case '--dir':
@@ -1501,7 +1521,8 @@ function doMergeTwice() {
   // CLI フラグ化検討 (v2.4.2)。
   // 値は DEFAULT_MERGE_TWICE_* に集約し isSameTheme() のデフォルトとも一致させる (F-B 対処)
   const tagOverlapMin = DEFAULT_MERGE_TWICE_TAG_OVERLAP_MIN;
-  const keywordJaccardMin = DEFAULT_MERGE_TWICE_JACCARD_MIN;
+  // v2.4.2: --jaccard-min CLI 指定時は上書き、未指定時は DEFAULT_MERGE_TWICE_JACCARD_MIN
+  const keywordJaccardMin = jaccardMin !== null ? jaccardMin : DEFAULT_MERGE_TWICE_JACCARD_MIN;
   const windowMs = mergeTwiceDays * 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - windowMs;
 
@@ -1583,7 +1604,30 @@ function doMergeTwice() {
 
   console.log('================================================');
   console.log(`合計候補: ${candidates.length} ペア`);
-  console.log(`💡 次のアクション: 各候補を手動レビューし、統合が妥当なら --execute (v2.4.1+) で実行`);
+  console.log(`💡 次のアクション: 各候補を手動レビューし、統合が妥当なら --execute (v2.4.2+) で merge-plan.json を書き出し`);
+
+  // v2.4.2: --execute で merge-plan.json を CWD に書き出し (中間出力、実マージは v2.4.3+ で対応予定)
+  if (executeMode) {
+    const planPath = join(process.cwd(), 'merge-plan.json');
+    const plan = {
+      version: '2.4.2',
+      generated_at: new Date().toISOString(),
+      threshold: { tagOverlapMin, keywordJaccardMin },
+      days: mergeTwiceDays,
+      totalCandidates: candidates.length,
+      candidates: candidates.map(c => ({
+        newFile: c.newFile,
+        existingFile: c.existingFile,
+        sharedCategoryTags: c.sharedCategoryTags,
+        sharedKeywords: c.sharedKeywords,
+        jaccardScore: c.jaccardScore,
+        action: 'TBD', // 'merge' / 'skip' / 'ignore' を利用者または別ツールが埋める
+      })),
+    };
+    writeFileSync(planPath, JSON.stringify(plan, null, 2));
+    console.log(`📝 merge-plan.json を書き出しました: ${planPath}`);
+    console.log(`   各候補の "action" フィールドを merge/skip/ignore で埋めて、実マージは v2.4.3+ (TBD) で対応予定`);
+  }
 }
 
 // --- --all モード ---
