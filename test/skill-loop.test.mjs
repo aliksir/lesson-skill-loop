@@ -53,6 +53,17 @@ function makeTempLessons(files) {
   return dir;
 }
 
+// v2.4.3: v2.4.2 で 2 つの describe (--jaccard-min / --execute) で重複定義していた
+// `sharedBody` と `makeMergePair` をモジュールスコープに共通化（kurouto Findings F2 対応）
+const MERGE_PAIR_SHARED_BODY = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
+
+function makeMergePair() {
+  return makeTempLessons({
+    'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${MERGE_PAIR_SHARED_BODY} for client implementations.\n`,
+    'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${MERGE_PAIR_SHARED_BODY} for server side.\n`,
+  });
+}
+
 // =============================================================================
 // 1. --help フラグ
 // =============================================================================
@@ -1154,11 +1165,7 @@ describe('v2.4.1: 日本語短文 Jaccard 強化', () => {
 // =============================================================================
 
 describe('v2.4.2: --jaccard-min CLI', () => {
-  const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
-  const makeMergePair = () => makeTempLessons({
-    'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
-    'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
-  });
+  // v2.4.3: makeMergePair / MERGE_PAIR_SHARED_BODY はモジュールスコープへ共通化
 
   test('--jaccard-min 0.99: 高閾値で候補ゼロ', () => {
     const dir = makeMergePair();
@@ -1206,11 +1213,7 @@ describe('v2.4.2: --jaccard-min CLI', () => {
 // =============================================================================
 
 describe('v2.4.2: --execute merge-plan.json', () => {
-  const sharedBody = 'rate limiting exponential backoff retry api integration testing authentication headers ratelimit';
-  const makeMergePair = () => makeTempLessons({
-    'a.md': `# API Rate Limiting Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for client implementations.\n`,
-    'b.md': `# API Backoff Lesson\n\`[api]\` \`[harness]\`\n\n## 概要\n\n${sharedBody} for server side.\n`,
-  });
+  // v2.4.3: makeMergePair / MERGE_PAIR_SHARED_BODY はモジュールスコープへ共通化
 
   test('--execute: merge-plan.json が CWD に書き出される', () => {
     const dir = makeMergePair();
@@ -1228,7 +1231,7 @@ describe('v2.4.2: --execute merge-plan.json', () => {
     const r = run(['--merge-twice', '--execute', '--no-version-check'], { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } });
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     const plan = JSON.parse(readFileSync(join(cwd, 'merge-plan.json'), 'utf-8'));
-    assert.equal(plan.version, '2.4.2');
+    assert.equal(plan.version, '2.4.3');
     assert.match(plan.generated_at, /^\d{4}-\d{2}-\d{2}T/);
     assert.ok(plan.threshold);
     assert.equal(typeof plan.threshold.keywordJaccardMin, 'number');
@@ -1255,6 +1258,82 @@ describe('v2.4.2: --execute merge-plan.json', () => {
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     const plan = JSON.parse(readFileSync(join(cwd, 'merge-plan.json'), 'utf-8'));
     assert.equal(plan.threshold.keywordJaccardMin, 0.05, `--jaccard-min 0.05 が plan に反映されていない: ${plan.threshold.keywordJaccardMin}`);
+  });
+});
+
+// =============================================================================
+// v2.4.3: F1 — candidates=0 時の --execute 動作（空配列で書き出し）
+// =============================================================================
+
+describe('v2.4.3: --execute candidates=0 でも書き出す (F1)', () => {
+  test('--execute + --jaccard-min 0.99: candidates=0 でも merge-plan.json が書き出される', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(
+      ['--merge-twice', '--execute', '--jaccard-min', '0.99', '--no-version-check'],
+      { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } }
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const planPath = join(cwd, 'merge-plan.json');
+    assert.ok(existsSync(planPath), `candidates=0 でも merge-plan.json が書き出されるべき (F1)\nstdout: ${r.stdout}`);
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    assert.equal(plan.candidates.length, 0, `candidates が空配列であるべき: ${JSON.stringify(plan.candidates)}`);
+    assert.equal(plan.totalCandidates, 0);
+  });
+
+  test('--execute + --jaccard-min 0.99: 空配列でも version/threshold schema 維持', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(
+      ['--merge-twice', '--execute', '--jaccard-min', '0.99', '--no-version-check'],
+      { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } }
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const plan = JSON.parse(readFileSync(join(cwd, 'merge-plan.json'), 'utf-8'));
+    assert.equal(plan.version, '2.4.3');
+    assert.equal(plan.threshold.keywordJaccardMin, 0.99);
+    assert.match(plan.generated_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.ok(Array.isArray(plan.candidates));
+  });
+});
+
+// =============================================================================
+// v2.4.3: F3 — --json --execute 両立（stdout JSON + merge-plan.json 同時出力）
+// =============================================================================
+
+describe('v2.4.3: --json --execute 両立 (F3)', () => {
+  test('--json --execute 両指定: stdout JSON parse 可 + merge-plan.json 存在', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(
+      ['--merge-twice', '--json', '--execute', '--no-version-check'],
+      { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } }
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // stdout の JSON が parse 可能
+    const stdoutJson = JSON.parse(r.stdout);
+    assert.equal(stdoutJson.mode, 'merge-twice');
+    assert.ok(Array.isArray(stdoutJson.candidates));
+    // merge-plan.json も書き出されている
+    const planPath = join(cwd, 'merge-plan.json');
+    assert.ok(existsSync(planPath), `--json --execute 両指定で merge-plan.json が書き出されるべき (F3)\nstdout: ${r.stdout}`);
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    assert.equal(plan.version, '2.4.3');
+  });
+
+  test('--json 単独: merge-plan.json は書き出されない (回帰)', () => {
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(
+      ['--merge-twice', '--json', '--no-version-check'],
+      { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } }
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const planPath = join(cwd, 'merge-plan.json');
+    assert.equal(existsSync(planPath), false, `--json 単独で merge-plan.json が書き出されるべきでない (回帰)`);
   });
 });
 
