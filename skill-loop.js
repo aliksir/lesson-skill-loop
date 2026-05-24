@@ -18,11 +18,12 @@
 //
 // EvoSkill論文（arxiv:2603.02766）の「失敗→スキル発見→改善」を実装。
 
-import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { randomBytes } from 'crypto';
 
 // --- 引数解析 ---
 
@@ -38,8 +39,9 @@ let mergeTwiceDays = 30; // v2.4.0: --merge-twice の "新規" ウィンドウ
 let jaccardMin = null;   // v2.4.2: --jaccard-min CLI override (null = DEFAULT_MERGE_TWICE_JACCARD_MIN 使用)
 let executeMode = false; // v2.4.2: --execute で merge-plan.json 書き出し (--merge-twice 時のみ)
 let applyPlanPath = null; // v2.4.4 Phase 1: --apply-plan <path> で merge-plan.json を読込・検証・dry-run 出力
+let rollbackPlanDir = null; // v2.4.5 Phase 2: --rollback-plan <dir> で backup から復元
 
-// v2.4.4 Phase 1: --apply-plan の candidates[].action 許可値（実マージは Phase 2 持ち越し）
+// v2.4.4 Phase 1: --apply-plan の candidates[].action 許可値（v2.4.5 で 'merge' は実マージ実行）
 const APPLY_PLAN_ACTIONS = ['merge', 'skip', 'ignore'];
 const selfUpdateMode = args.includes('--self-update');
 const noVersionCheck = args.includes('--no-version-check');
@@ -67,10 +69,15 @@ Options:
   --execute          v2.4.2+: --merge-twice 検出結果を merge-plan.json として CWD に書き出し
                      v2.4.3+: candidates=0 でも空配列で書き出し、--json と両立可（両方出力）
                      (実マージは未実装、merge-plan.json は手動レビュー or 別ツール用の中間出力)
-  --apply-plan <p>   v2.4.4 Phase 1: merge-plan.json (<p>) を読み込んで dry-run 解析 + サマリ出力。
+  --apply-plan <p>   v2.4.4 Phase 1+: merge-plan.json (<p>) を読み込んで dry-run 解析 + サマリ出力。
                      各 candidate の action ('merge' / 'skip' / 'ignore') を集計するのみで、
                      実際の統合（lessons/*.md 変更）は行わない。'TBD' 残存はバリデーションエラー。
-                     実マージは Phase 2 (v2.4.5+) で対応予定。
+                     他 mode (--sync/--health/--map/--all) との同時指定は exit 1。
+  --apply-plan --execute  v2.4.5+: action='merge' を実マージ実行（破壊操作）。
+                     existingFile に newFile を append、newFile を退避、backup ディレクトリと
+                     restore-manifest.json を ./.apply-plan-backup/{stamp}/ 配下に生成。
+  --rollback-plan <d> v2.4.5+: backup ディレクトリ <d> から完全復元（rollback 1 回限り、二重実行不可）。
+                     restore-manifest.json を読み込み、existingFile と newFile を元に戻す。
   --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
                      Relative paths are resolved from the current working directory.
                      The target must be a directory (not a file).
@@ -209,6 +216,7 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--apply-plan': {
       // v2.4.4 Phase 1: merge-plan.json を読み込んで dry-run 解析
+      // v2.4.5 Phase 2: --execute 同時指定で実マージ実行
       mode = 'apply-plan';
       const p = args[++i];
       if (!p || p.startsWith('--')) {
@@ -216,6 +224,17 @@ for (let i = 0; i < args.length; i++) {
         process.exit(1);
       }
       applyPlanPath = p;
+      break;
+    }
+    case '--rollback-plan': {
+      // v2.4.5 Phase 2: backup ディレクトリから復元
+      mode = 'rollback-plan';
+      const d = args[++i];
+      if (!d || d.startsWith('--')) {
+        console.error('Error: --rollback-plan requires a directory path (e.g., --rollback-plan ./.apply-plan-backup/20260524_220530_847_12345)');
+        process.exit(1);
+      }
+      rollbackPlanDir = d;
       break;
     }
     case '--json':    jsonMode = true;  break;
@@ -243,6 +262,25 @@ for (let i = 0; i < args.length; i++) {
       if (!arg.startsWith('--')) {
         lessonsDir = arg;
       }
+  }
+}
+
+// v2.4.5 Phase 2 Nit-2: --apply-plan と他 mode (--sync/--health/--map/--all) の同時指定をエラー化
+// modeFlags は args 直接 includes で再判定（mode 変数は最後に上書きされた値だけが残るため）
+if (applyPlanPath) {
+  const conflictingModeFlags = ['--sync', '--health', '--map', '--all', '--merge-twice', '--rollback-plan'];
+  const conflicts = conflictingModeFlags.filter(f => args.includes(f));
+  if (conflicts.length > 0) {
+    console.error(`✘ Error: --apply-plan must be used alone (cannot combine with: ${conflicts.join(', ')})`);
+    process.exit(1);
+  }
+}
+if (rollbackPlanDir) {
+  const conflictingModeFlags = ['--sync', '--health', '--map', '--all', '--merge-twice', '--apply-plan'];
+  const conflicts = conflictingModeFlags.filter(f => args.includes(f));
+  if (conflicts.length > 0) {
+    console.error(`✘ Error: --rollback-plan must be used alone (cannot combine with: ${conflicts.join(', ')})`);
+    process.exit(1);
   }
 }
 
@@ -1695,7 +1733,7 @@ function validatePlanSchema(plan) {
   return errors;
 }
 
-function doApplyPlan(planPath, jsonMode) {
+function doApplyPlan(planPath, jsonMode, executeMode) {
   // 1. ファイル読込
   if (!existsSync(planPath)) {
     if (jsonMode) {
@@ -1729,6 +1767,11 @@ function doApplyPlan(planPath, jsonMode) {
     process.exit(1);
   }
 
+  // v2.4.5 Phase 2: --execute 指定時は実マージ実行に分岐
+  if (executeMode) {
+    return doApplyPlanExecute(plan, planPath, jsonMode);
+  }
+
   // 3. 集計
   const summary = { merge: 0, skip: 0, ignore: 0 };
   for (const c of plan.candidates) {
@@ -1738,7 +1781,7 @@ function doApplyPlan(planPath, jsonMode) {
   // 4. 出力
   if (jsonMode) {
     const out = {
-      version: '2.4.4',
+      version: '2.4.5',
       mode: 'apply-plan',
       planPath,
       planVersion: plan.version,
@@ -1750,8 +1793,12 @@ function doApplyPlan(planPath, jsonMode) {
         jaccardScore: c.jaccardScore,
       })),
       dryRun: true,
-      note: '実マージは v2.4.5+ で対応予定',
+      note: '実マージは --execute で実行可能 (v2.4.5+)',
     };
+    // v2.4.5 Nit-3: candidates=[] 警告
+    if (plan.candidates.length === 0) {
+      out.warning = 'candidates が空です。merge-plan.json を確認してください。';
+    }
     console.log(JSON.stringify(out, null, 2));
     return;
   }
@@ -1762,6 +1809,14 @@ function doApplyPlan(planPath, jsonMode) {
   console.log(`   generated_at: ${plan.generated_at}`);
   console.log(`   totalCandidates: ${plan.candidates.length}`);
   console.log('');
+
+  // v2.4.5 Nit-3: candidates=[] 警告
+  if (plan.candidates.length === 0) {
+    console.log('⚠️  candidates が空です。merge-plan.json を確認してください。');
+    console.log('');
+    return;
+  }
+
   console.log('📊 サマリ:');
   console.log(`   merge: ${summary.merge} 件`);
   console.log(`   skip: ${summary.skip} 件`);
@@ -1784,7 +1839,295 @@ function doApplyPlan(planPath, jsonMode) {
     console.log('');
   }
 
-  console.log('⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。');
+  console.log('⚠️  これは dry-run です。実マージは --execute で実行可能 (v2.4.5+)。');
+}
+
+// --- モード6.5: v2.4.5 Phase 2 --apply-plan --execute (実マージ実行) ---
+
+// timestamp 文字列を生成: "YYYYMMDD_HHmmss_ms"（pid は呼出側で suffix）
+function formatStamp(date) {
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_` +
+         `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_` +
+         `${pad(date.getMilliseconds(), 3)}`;
+}
+
+function doApplyPlanExecute(plan, planPath, jsonMode) {
+  // 0. R2 対応: 全 candidate の path を絶対パス正規化（rollback 時の CWD 依存排除）
+  for (const c of plan.candidates) {
+    if (c.action === 'merge') {
+      c.existingFile = resolve(c.existingFile);
+      c.newFile = resolve(c.newFile);
+    }
+  }
+
+  // 1. backup ディレクトリ作成（timestamp + milli + pid で衝突回避）
+  const stamp = formatStamp(new Date());
+  const backupDir = join(process.cwd(), '.apply-plan-backup', `${stamp}_${process.pid}`);
+  if (existsSync(backupDir)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'backup directory collision', path: backupDir }, null, 2));
+    } else {
+      console.error(`✘ backup ディレクトリ衝突: ${backupDir}`);
+    }
+    process.exit(1);
+  }
+  try {
+    mkdirSync(join(backupDir, 'backup'), { recursive: true });
+    mkdirSync(join(backupDir, 'moved'), { recursive: true });
+  } catch (e) {
+    // R4 対応: CWD 読み取り専用 / EACCES など
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'backup directory creation failed', message: e.message, path: backupDir }, null, 2));
+    } else {
+      console.error(`✘ backup ディレクトリ作成失敗: ${backupDir}\n   ${e.message}`);
+    }
+    process.exit(1);
+  }
+
+  // 2. 各 candidate を順次処理
+  const manifest = {
+    manifest_version: '1.0',
+    tool_version: '2.4.5',
+    applied_at: new Date().toISOString(),
+    source_plan_path: resolve(planPath),
+    source_plan_version: plan.version,
+    candidates: [],
+    skipped: [],
+    rolled_back_at: null,
+  };
+
+  for (const c of plan.candidates) {
+    if (c.action === 'merge') {
+      // existingFile 不在チェック
+      if (!existsSync(c.existingFile)) {
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: 'existingFile not found', path: c.existingFile, backupDir }, null, 2));
+        } else {
+          console.error(`✘ existingFile not found: ${c.existingFile}`);
+          console.error(`   backup ディレクトリは ${backupDir} に部分作成済（未使用）。`);
+        }
+        process.exit(1);
+      }
+      if (!existsSync(c.newFile)) {
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: 'newFile not found', path: c.newFile, backupDir }, null, 2));
+        } else {
+          console.error(`✘ newFile not found: ${c.newFile}`);
+          console.error(`   backup ディレクトリは ${backupDir} に部分作成済（未使用）。`);
+        }
+        process.exit(1);
+      }
+
+      const uuid = randomBytes(4).toString('hex');
+      const backupPath = join(backupDir, 'backup', `${uuid}.md`);
+      const movedPath = join(backupDir, 'moved', `${uuid}.md`);
+
+      try {
+        // backup → moved → append → unlink の順序厳守（Pre-Mortem #1）
+        const existingContent = readFileSync(c.existingFile, 'utf-8');
+        writeFileSync(backupPath, existingContent);
+        const newContent = readFileSync(c.newFile, 'utf-8');
+        writeFileSync(movedPath, newContent);
+        // append（区切り \n\n---\n\n）
+        writeFileSync(c.existingFile, existingContent + '\n\n---\n\n' + newContent);
+        // newFile を削除（moved にコピー済）
+        unlinkSync(c.newFile);
+      } catch (e) {
+        // R4 対応: backup write 中断（disk full / EACCES 等）
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: 'merge execution failed', message: e.message, candidate: { existingFile: c.existingFile, newFile: c.newFile }, backupDir }, null, 2));
+        } else {
+          console.error(`✘ merge 実行中に失敗: ${c.existingFile} <= ${c.newFile}\n   ${e.message}`);
+          console.error(`   manifest 未書き出し。backup ディレクトリを手動確認してください: ${backupDir}`);
+        }
+        process.exit(1);
+      }
+
+      manifest.candidates.push({
+        newFile: c.newFile,
+        existingFile: c.existingFile,
+        action: 'merge',
+        backup_uuid: uuid,
+        existingFile_backup_path: `backup/${uuid}.md`,
+        newFile_moved_path: `moved/${uuid}.md`,
+        merged_at: new Date().toISOString(),
+      });
+    } else {
+      // skip / ignore はログのみ
+      manifest.skipped.push({ newFile: c.newFile, existingFile: c.existingFile, action: c.action });
+    }
+  }
+
+  // 3. manifest 書き出し
+  const manifestPath = join(backupDir, 'restore-manifest.json');
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  // 4. 出力
+  outputExecuteSummary(manifest, backupDir, jsonMode);
+}
+
+function outputExecuteSummary(manifest, backupDir, jsonMode) {
+  const mergeCount = manifest.candidates.length;
+  const skipCount = manifest.skipped.filter(s => s.action === 'skip').length;
+  const ignoreCount = manifest.skipped.filter(s => s.action === 'ignore').length;
+
+  if (jsonMode) {
+    const out = {
+      version: '2.4.5',
+      mode: 'apply-plan-execute',
+      applied_at: manifest.applied_at,
+      backup_dir: backupDir,
+      summary: { merge: mergeCount, skip: skipCount, ignore: ignoreCount },
+      candidates: manifest.candidates,
+      manifest_path: join(backupDir, 'restore-manifest.json'),
+    };
+    // Nit-3: candidates=[] 警告
+    if (mergeCount + skipCount + ignoreCount === 0) {
+      out.warning = 'candidates が空です。merge-plan.json を確認してください。';
+    }
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+
+  console.log('✅ 実マージ完了');
+  console.log(`   applied_at: ${manifest.applied_at}`);
+  console.log(`   backup: ${backupDir}`);
+  console.log(`   merge: ${mergeCount} 件 / skip: ${skipCount} 件 / ignore: ${ignoreCount} 件`);
+  console.log('');
+
+  // Nit-3: candidates=[] 警告
+  if (mergeCount + skipCount + ignoreCount === 0) {
+    console.log('⚠️  candidates が空です。merge-plan.json を確認してください。');
+    console.log('');
+    return;
+  }
+
+  if (mergeCount > 0) {
+    console.log('📝 merge 実行内容:');
+    manifest.candidates.forEach((c, i) => {
+      console.log(`   ${i + 1}. ${c.existingFile} ⇐ ${c.newFile}`);
+    });
+    console.log('');
+  }
+
+  console.log(`💡 rollback: node skill-loop.js --rollback-plan ${backupDir}`);
+}
+
+// --- モード7: v2.4.5 Phase 2 --rollback-plan (backup から復元) ---
+
+function doRollbackPlan(rollbackDir, jsonMode) {
+  // 1. manifest 読み込み
+  if (!existsSync(rollbackDir)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'rollback directory not found', path: rollbackDir }, null, 2));
+    } else {
+      console.error(`✘ rollback directory not found: ${rollbackDir}`);
+    }
+    process.exit(1);
+  }
+  const manifestPath = join(rollbackDir, 'restore-manifest.json');
+  if (!existsSync(manifestPath)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'restore-manifest.json not found', path: manifestPath }, null, 2));
+    } else {
+      console.error(`✘ restore-manifest.json not found: ${manifestPath}`);
+    }
+    process.exit(1);
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  } catch (e) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'Invalid manifest JSON', message: e.message, path: manifestPath }, null, 2));
+    } else {
+      console.error(`✘ Invalid manifest JSON in ${manifestPath}: ${e.message}`);
+    }
+    process.exit(1);
+  }
+
+  // 1.5. R1 対応: 二重実行防止（設計判断§3: rolled_back_at で「使用済み」フラグ化）
+  if (manifest.rolled_back_at !== null && manifest.rolled_back_at !== undefined) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'already rolled back', rolled_back_at: manifest.rolled_back_at, path: rollbackDir }, null, 2));
+    } else {
+      console.error(`✘ このバックアップは既に rollback 済みです (${manifest.rolled_back_at})`);
+      console.error(`   同じ backup ディレクトリを 2 回 rollback することはできません。`);
+    }
+    process.exit(1);
+  }
+
+  // 2. 各 candidate を復元（各ファイルを独立上書きするため順序依存なし）
+  for (const c of manifest.candidates) {
+    // existingFile を backup から復元（上書き）
+    const backupPath = join(rollbackDir, c.existingFile_backup_path);
+    if (!existsSync(backupPath)) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: 'backup file missing', path: backupPath }, null, 2));
+      } else {
+        console.error(`✘ backup file missing: ${backupPath}`);
+      }
+      process.exit(1);
+    }
+    const backupContent = readFileSync(backupPath, 'utf-8');
+    writeFileSync(c.existingFile, backupContent);
+
+    // newFile を moved から復元
+    const movedPath = join(rollbackDir, c.newFile_moved_path);
+    if (!existsSync(movedPath)) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: 'moved file missing', path: movedPath }, null, 2));
+      } else {
+        console.error(`✘ moved file missing: ${movedPath}`);
+      }
+      process.exit(1);
+    }
+    const movedContent = readFileSync(movedPath, 'utf-8');
+    writeFileSync(c.newFile, movedContent);
+  }
+
+  // 3. manifest に rolled_back_at を追記
+  manifest.rolled_back_at = new Date().toISOString();
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  // 4. 出力
+  outputRollbackSummary(manifest, rollbackDir, jsonMode);
+}
+
+function outputRollbackSummary(manifest, rollbackDir, jsonMode) {
+  const restored = manifest.candidates;
+
+  if (jsonMode) {
+    const out = {
+      version: '2.4.5',
+      mode: 'rollback-plan',
+      rolled_back_at: manifest.rolled_back_at,
+      rollback_dir: rollbackDir,
+      restored_count: restored.length,
+      restored: restored.map(c => ({
+        existingFile: c.existingFile,
+        newFile: c.newFile,
+        existingFile_backup_path: c.existingFile_backup_path,
+        newFile_moved_path: c.newFile_moved_path,
+      })),
+    };
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+
+  console.log('✅ rollback 完了');
+  console.log(`   rolled_back_at: ${manifest.rolled_back_at}`);
+  console.log(`   復元: ${restored.length} ファイル`);
+  console.log('');
+
+  if (restored.length > 0) {
+    console.log('📝 復元内容:');
+    restored.forEach((c, i) => {
+      console.log(`   ${i + 1}. ${c.existingFile} (from ${c.existingFile_backup_path})`);
+      console.log(`      ${c.newFile} (from ${c.newFile_moved_path})`);
+    });
+  }
 }
 
 // --- --all モード ---
@@ -1908,9 +2251,16 @@ async function main() {
   }
 
   // v2.4.4 Phase 1: --apply-plan は LESSONS_DIR と無関係（merge-plan.json 単体読込のみ）
+  // v2.4.5 Phase 2: --execute 同時指定で実マージ分岐（doApplyPlan 内で）
   // LESSON_FILES 空チェックと --for 検証の前で early return
   if (mode === 'apply-plan') {
-    doApplyPlan(applyPlanPath, jsonMode);
+    doApplyPlan(applyPlanPath, jsonMode, executeMode);
+    return;
+  }
+
+  // v2.4.5 Phase 2: --rollback-plan は LESSONS_DIR と無関係（backup ディレクトリ単体読込のみ）
+  if (mode === 'rollback-plan') {
+    doRollbackPlan(rollbackPlanDir, jsonMode);
     return;
   }
 

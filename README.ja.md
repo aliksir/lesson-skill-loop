@@ -147,7 +147,7 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
 
 `--apply-plan <path>` は `--merge-twice --execute` が書き出した `merge-plan.json` を読み取り、各 candidate の処理予定を **dry-run でサマリ出力**します。`action` フィールド（`merge` / `skip` / `ignore`）を集計し、対象ファイルを一覧化します。
 
-**本リリースは Phase 1**: バリデーションとサマリ出力のみで、**ファイルは一切変更しません**。実際の統合処理は **v2.4.5+ (Phase 2)** で対応予定です。
+**Phase 1（本セクション）**: バリデーションとサマリ出力のみで、**ファイルは一切変更しません**。実際の統合処理とロールバックは **v2.4.5+ (Phase 2) で実装済み** — 次のセクション参照。
 
 ```bash
 # 1) --merge-twice --execute で merge-plan.json を生成
@@ -179,7 +179,7 @@ claude-skill-loop --apply-plan ./merge-plan.json --json
 📝 merge 対象 (1 件):
    1. lessons/recent.md ⇐ lessons/old.md (jaccard: 0.42)
 
-⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。
+⚠️  これは dry-run です。実マージは --execute で実行可能 (v2.4.5+)。
 ```
 
 **バリデーションルール**:
@@ -188,6 +188,53 @@ claude-skill-loop --apply-plan ./merge-plan.json --json
 - 不正 JSON / ファイル不在 → exit 1
 
 **なぜ段階導入か**: 実マージはファイル append / 削除 / git commit という破壊操作を含むため、Phase 1 で JSON スキーマとバリデーションを確定させ、Phase 2 で実マージロジックを安全に積み上げます。
+
+## merge-plan.json の実マージとロールバック（`--apply-plan --execute` / `--rollback-plan`、v2.4.5+、Phase 2）
+
+`v2.4.5` で **実マージ実行** と **ロールバック機能** を追加（Phase 1 dry-run の上に積み上げ）。
+
+### 実マージ（`--apply-plan --execute`）
+
+```bash
+# 1) merge-plan.json を生成し、各 candidate の "action" を手動編集（Phase 1 と同じ）
+claude-skill-loop --merge-twice --execute --no-version-check
+$EDITOR merge-plan.json
+
+# 2) 実マージ実行（破壊操作！）
+claude-skill-loop --apply-plan ./merge-plan.json --execute
+```
+
+`candidate.action === 'merge'` の各 candidate について:
+
+- `existingFile` を `./.apply-plan-backup/{stamp}/backup/{uuid}.md` に backup
+- `newFile` を `./.apply-plan-backup/{stamp}/moved/{uuid}.md` に移動
+- `newFile` の内容を `existingFile` に区切り文字 `\n\n---\n\n` 付きで append
+- 同じ backup ディレクトリに `restore-manifest.json` を書き出し
+
+`skip` / `ignore` は manifest に記録されるが、ファイル変更は発生しない。
+
+### ロールバック（`--rollback-plan`）
+
+```bash
+# --execute 前の状態に完全復元（上記で作成された backup ディレクトリを指定）
+claude-skill-loop --rollback-plan ./.apply-plan-backup/20260524_220530_847_12345
+```
+
+rollback は backup から `existingFile` と `newFile` を元の内容に復元する。manifest の `rolled_back_at` フィールドが更新され、**同じ backup ディレクトリは 2 回 rollback できない**（再実行で exit 1）。
+
+### 推奨 `.gitignore`
+
+backup ディレクトリには教訓内容のスナップショットが入るため、commit しないこと。
+
+```gitignore
+.apply-plan-backup/
+```
+
+### 安全性
+
+- `--apply-plan` / `--rollback-plan` は他のモード（`--sync` / `--health` / `--map` / `--all` / `--merge-twice` および互いに）と同時指定不可（exit 1）
+- manifest の `version: "1.0"` により将来の互換 migration が可能
+- `merge-plan.json` 内のパスは execute 時に絶対パスへ正規化されるため、rollback 時の CWD が異なっても復元先が狂わない
 
 ## 教訓ファイルの書き方
 
