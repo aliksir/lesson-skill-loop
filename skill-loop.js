@@ -60,6 +60,7 @@ Options:
   --days <N>         v2.4.0+: --merge-twice の "新規" 判定ウィンドウ (mtime N 日以内、default: 30)
   --jaccard-min <N>  v2.4.2+: --merge-twice の Jaccard 類似度下限を上書き (0.0-1.0、default: 0.20)
   --execute          v2.4.2+: --merge-twice 検出結果を merge-plan.json として CWD に書き出し
+                     v2.4.3+: candidates=0 でも空配列で書き出し、--json と両立可（両方出力）
                      (実マージは未実装、merge-plan.json は手動レビュー or 別ツール用の中間出力)
   --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
                      Relative paths are resolved from the current working directory.
@@ -1568,7 +1569,11 @@ function doMergeTwice() {
   // jaccardScore 降順でソート
   candidates.sort((a, b) => b.jaccardScore - a.jaccardScore);
 
+  // v2.4.3: --execute は jsonMode / candidates=0 を問わず常に評価（F1/F3 対応）
   if (jsonMode) {
+    if (executeMode) {
+      writeExecutePlan(candidates, tagOverlapMin, keywordJaccardMin, mergeTwiceDays, /*silent*/ true);
+    }
     return {
       mode: 'merge-twice',
       threshold: { tagOverlapMin, keywordJaccardMin },
@@ -1587,46 +1592,57 @@ function doMergeTwice() {
   if (candidates.length === 0) {
     console.log('✅ 統合候補なし');
     console.log(`   閾値: 主タグ一致 >= ${tagOverlapMin} AND キーワード Jaccard >= ${keywordJaccardMin}`);
-    return;
+    // v2.4.3: F1 対応 — return せず executeMode 評価へ進む（candidates=0 でも空 plan を書き出す）
+  } else {
+    candidates.forEach((c, idx) => {
+      console.log(`📂 候補ペア #${idx + 1}:`);
+      console.log(`  新規:   ${c.newFile}`);
+      console.log(`  既存:   ${c.existingFile}`);
+      console.log(`  shared カテゴリタグ: ${c.sharedCategoryTags.join(', ')}`);
+      const kw = c.sharedKeywords.slice(0, 8).join(', ');
+      const more = c.sharedKeywords.length > 8 ? ` ... (+${c.sharedKeywords.length - 8})` : '';
+      console.log(`  shared keywords:     ${kw}${more}`);
+      console.log(`  Jaccard score:       ${c.jaccardScore}`);
+      console.log('');
+    });
+
+    console.log('================================================');
+    console.log(`合計候補: ${candidates.length} ペア`);
+    console.log(`💡 次のアクション: 各候補を手動レビューし、統合が妥当なら --execute (v2.4.2+) で merge-plan.json を書き出し`);
   }
 
-  candidates.forEach((c, idx) => {
-    console.log(`📂 候補ペア #${idx + 1}:`);
-    console.log(`  新規:   ${c.newFile}`);
-    console.log(`  既存:   ${c.existingFile}`);
-    console.log(`  shared カテゴリタグ: ${c.sharedCategoryTags.join(', ')}`);
-    const kw = c.sharedKeywords.slice(0, 8).join(', ');
-    const more = c.sharedKeywords.length > 8 ? ` ... (+${c.sharedKeywords.length - 8})` : '';
-    console.log(`  shared keywords:     ${kw}${more}`);
-    console.log(`  Jaccard score:       ${c.jaccardScore}`);
-    console.log('');
-  });
-
-  console.log('================================================');
-  console.log(`合計候補: ${candidates.length} ペア`);
-  console.log(`💡 次のアクション: 各候補を手動レビューし、統合が妥当なら --execute (v2.4.2+) で merge-plan.json を書き出し`);
-
-  // v2.4.2: --execute で merge-plan.json を CWD に書き出し (中間出力、実マージは v2.4.3+ で対応予定)
+  // v2.4.3: --execute で merge-plan.json を CWD に書き出し（candidates=0 でも書き出す = F1）
   if (executeMode) {
-    const planPath = join(process.cwd(), 'merge-plan.json');
-    const plan = {
-      version: '2.4.2',
-      generated_at: new Date().toISOString(),
-      threshold: { tagOverlapMin, keywordJaccardMin },
-      days: mergeTwiceDays,
-      totalCandidates: candidates.length,
-      candidates: candidates.map(c => ({
-        newFile: c.newFile,
-        existingFile: c.existingFile,
-        sharedCategoryTags: c.sharedCategoryTags,
-        sharedKeywords: c.sharedKeywords,
-        jaccardScore: c.jaccardScore,
-        action: 'TBD', // 'merge' / 'skip' / 'ignore' を利用者または別ツールが埋める
-      })),
-    };
-    writeFileSync(planPath, JSON.stringify(plan, null, 2));
+    writeExecutePlan(candidates, tagOverlapMin, keywordJaccardMin, mergeTwiceDays, /*silent*/ false);
+  }
+}
+
+// v2.4.3: merge-plan.json 書き出しヘルパー（F1/F2 対応で jsonMode と非 jsonMode 両経路から呼出）
+function writeExecutePlan(candidates, tagOverlapMin, keywordJaccardMin, mergeTwiceDays, silent) {
+  const planPath = join(process.cwd(), 'merge-plan.json');
+  const plan = {
+    version: '2.4.3',
+    generated_at: new Date().toISOString(),
+    threshold: { tagOverlapMin, keywordJaccardMin },
+    days: mergeTwiceDays,
+    totalCandidates: candidates.length,
+    candidates: candidates.map(c => ({
+      newFile: c.newFile,
+      existingFile: c.existingFile,
+      sharedCategoryTags: c.sharedCategoryTags,
+      sharedKeywords: c.sharedKeywords,
+      jaccardScore: c.jaccardScore,
+      action: 'TBD', // 'merge' / 'skip' / 'ignore' を利用者または別ツールが埋める
+    })),
+  };
+  writeFileSync(planPath, JSON.stringify(plan, null, 2));
+  if (!silent) {
     console.log(`📝 merge-plan.json を書き出しました: ${planPath}`);
-    console.log(`   各候補の "action" フィールドを merge/skip/ignore で埋めて、実マージは v2.4.3+ (TBD) で対応予定`);
+    if (candidates.length === 0) {
+      console.log(`   ※ candidates=0 のため空配列で書き出し（v2.4.3+ 一貫挙動）`);
+    } else {
+      console.log(`   各候補の "action" フィールドを merge/skip/ignore で埋めて、実マージは v2.4.4+ (TBD) で対応予定`);
+    }
   }
 }
 
