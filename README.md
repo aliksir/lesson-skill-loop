@@ -189,6 +189,52 @@ Example output:
 
 **Why phased**: actual merge involves destructive file operations (append / delete / git commit). Phase 1 locks the JSON schema and validation so Phase 2 can safely build on top without re-architecting.
 
+## Execute and Rollback merge-plan.json (`--apply-plan --execute` / `--rollback-plan`, v2.4.5+, Phase 2)
+
+`v2.4.5` adds **actual merge execution** and **rollback** support on top of Phase 1's dry-run.
+
+### Execute (`--apply-plan --execute`)
+
+```bash
+# 1) Generate merge-plan.json and edit each candidate's "action" (same as Phase 1)
+claude-skill-loop --merge-twice --execute --no-version-check
+$EDITOR merge-plan.json
+
+# 2) Execute the merge (destructive!)
+claude-skill-loop --apply-plan ./merge-plan.json --execute
+```
+
+For each `candidate.action === 'merge'`:
+- `existingFile` is backed up to `./.apply-plan-backup/{stamp}/backup/{uuid}.md`
+- `newFile` is moved to `./.apply-plan-backup/{stamp}/moved/{uuid}.md`
+- `newFile` content is appended to `existingFile` with separator `\n\n---\n\n`
+- A `restore-manifest.json` is written into the same backup directory
+
+`skip` / `ignore` actions are logged but no files are modified.
+
+### Rollback (`--rollback-plan`)
+
+```bash
+# Restore the state before --execute (uses the backup directory created above)
+claude-skill-loop --rollback-plan ./.apply-plan-backup/20260524_220530_847_12345
+```
+
+Rollback restores every `existingFile` and `newFile` to its original content using the backup. The manifest's `rolled_back_at` field is updated, and **the same backup directory cannot be rolled back twice** (exit 1 on retry).
+
+### Recommended `.gitignore`
+
+The backup directory contains lessons content snapshots; do not commit it.
+
+```gitignore
+.apply-plan-backup/
+```
+
+### Safety
+
+- `--apply-plan` and `--rollback-plan` cannot be combined with each other or with `--sync` / `--health` / `--map` / `--all` / `--merge-twice` (exit 1).
+- Manifest `version: "1.0"` allows future migration.
+- Paths in `merge-plan.json` are normalised to absolute paths at execute time, so rollback works regardless of CWD.
+
 ## Lesson File Format
 
 Lessons are markdown files with tagged headings:

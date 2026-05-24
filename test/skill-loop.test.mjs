@@ -1503,3 +1503,354 @@ describe('v2.4.4 Phase 1: --help に --apply-plan', () => {
   });
 });
 
+// =============================================================================
+// v2.4.5 Phase 2: --apply-plan --execute (実マージ) + --rollback-plan + Nit 1/2/3
+// =============================================================================
+
+import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir as os_tmpdir } from 'node:os';
+
+function hashFile(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+// 一時 lessons + plan セットアップヘルパー（T22-v2, T25-T33 共通）
+function setupTmpLessonsAndPlan(actions = ['merge']) {
+  const dir = join(os_tmpdir(), `lsl-v245-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+
+  const candidates = actions.map((action, i) => {
+    const newFile = join(dir, `new-${i}.md`);
+    const existingFile = join(dir, `existing-${i}.md`);
+    writeFileSync(newFile, `### lesson new ${i} [test]\n\nbody new ${i}\n`);
+    writeFileSync(existingFile, `### lesson existing ${i} [test]\n\nbody existing ${i}\n`);
+    return {
+      newFile,
+      existingFile,
+      sharedCategoryTags: ['test'],
+      sharedKeywords: ['lesson'],
+      jaccardScore: 0.5,
+      action,
+    };
+  });
+
+  const planPath = join(dir, 'merge-plan.json');
+  writeFileSync(planPath, JSON.stringify({
+    version: '2.4.3',
+    generated_at: new Date().toISOString(),
+    threshold: { tagOverlapMin: 2, keywordJaccardMin: 0.2 },
+    days: 30,
+    totalCandidates: candidates.length,
+    candidates,
+  }, null, 2));
+
+  return { dir, planPath, candidates };
+}
+
+describe('v2.4.5 Phase 2: --apply-plan --execute (実マージ)', () => {
+  test('T25 [critical] --execute で action=merge が実行され、existingFile に newFile が append される', () => {
+    const { dir, planPath, candidates } = setupTmpLessonsAndPlan(['merge']);
+    try {
+      const r = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(r.status, 0, `exit code 0 expected, stderr:\n${r.stderr}`);
+
+      // existingFile に append されていること
+      const merged = readFileSync(candidates[0].existingFile, 'utf-8');
+      assert.ok(merged.includes('body existing 0'), `existingFile に元の内容が残っているはず`);
+      assert.ok(merged.includes('body new 0'), `existingFile に newFile 内容が append されているはず`);
+      assert.ok(merged.includes('\n\n---\n\n'), `区切り文字 \\n\\n---\\n\\n が挿入されているはず`);
+
+      // newFile は削除されている
+      assert.equal(existsSync(candidates[0].newFile), false, `newFile は削除されているはず`);
+
+      // backup ディレクトリが生成されている
+      const backupRoot = join(dir, '.apply-plan-backup');
+      assert.ok(existsSync(backupRoot), `backup ルートディレクトリが存在するはず`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T26 [critical] backup ディレクトリ構造 + restore-manifest.json スキーマ', () => {
+    const { dir, planPath } = setupTmpLessonsAndPlan(['merge', 'merge']);
+    try {
+      const r = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(r.status, 0, `stderr:\n${r.stderr}`);
+
+      const backupRoot = join(dir, '.apply-plan-backup');
+      const subdirs = readdirSync(backupRoot);
+      assert.equal(subdirs.length, 1, `1 つの backup サブディレクトリが生成されているはず`);
+
+      const backupDir = join(backupRoot, subdirs[0]);
+      assert.ok(existsSync(join(backupDir, 'backup')), `backup/ サブディレクトリ存在`);
+      assert.ok(existsSync(join(backupDir, 'moved')), `moved/ サブディレクトリ存在`);
+      assert.ok(existsSync(join(backupDir, 'restore-manifest.json')), `restore-manifest.json 存在`);
+
+      // backup/ と moved/ それぞれ 2 ファイル
+      assert.equal(readdirSync(join(backupDir, 'backup')).length, 2);
+      assert.equal(readdirSync(join(backupDir, 'moved')).length, 2);
+
+      // manifest スキーマ
+      const manifest = JSON.parse(readFileSync(join(backupDir, 'restore-manifest.json'), 'utf-8'));
+      assert.equal(manifest.manifest_version, '1.0');
+      assert.equal(manifest.tool_version, '2.4.5');
+      assert.ok(manifest.applied_at);
+      assert.ok(manifest.source_plan_path);
+      assert.equal(manifest.candidates.length, 2);
+      assert.equal(manifest.rolled_back_at, null);
+      for (const c of manifest.candidates) {
+        assert.equal(c.action, 'merge');
+        assert.ok(c.backup_uuid);
+        assert.ok(c.existingFile_backup_path);
+        assert.ok(c.newFile_moved_path);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T27 [critical] --rollback-plan で完全復元（hash 比較）', () => {
+    const { dir, planPath, candidates } = setupTmpLessonsAndPlan(['merge', 'merge']);
+    try {
+      // execute 前の hash 記録
+      const hashesBefore = candidates.map(c => ({
+        existingFile: c.existingFile,
+        newFile: c.newFile,
+        existingHash: hashFile(c.existingFile),
+        newHash: hashFile(c.newFile),
+      }));
+
+      // execute
+      const execR = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(execR.status, 0, `execute stderr:\n${execR.stderr}`);
+
+      const backupRoot = join(dir, '.apply-plan-backup');
+      const subdirs = readdirSync(backupRoot);
+      const backupDir = join(backupRoot, subdirs[0]);
+
+      // newFile が削除されている前提
+      for (const c of candidates) {
+        assert.equal(existsSync(c.newFile), false);
+      }
+
+      // rollback
+      const rbR = run(['--rollback-plan', backupDir, '--no-version-check'], { cwd: dir });
+      assert.equal(rbR.status, 0, `rollback stderr:\n${rbR.stderr}`);
+
+      // hash 比較
+      for (const h of hashesBefore) {
+        assert.ok(existsSync(h.existingFile), `existingFile 復元`);
+        assert.ok(existsSync(h.newFile), `newFile 復元`);
+        assert.equal(hashFile(h.existingFile), h.existingHash, `existingFile hash 一致`);
+        assert.equal(hashFile(h.newFile), h.newHash, `newFile hash 一致`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T28 mixed action: merge のみ実行、skip/ignore は manifest.skipped に記録', () => {
+    const { dir, planPath, candidates } = setupTmpLessonsAndPlan(['merge', 'skip', 'ignore']);
+    try {
+      // skip / ignore の元 mtime 記録
+      const skipFileBefore = statSync(candidates[1].existingFile).mtimeMs;
+      const ignoreFileBefore = statSync(candidates[2].existingFile).mtimeMs;
+
+      const r = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(r.status, 0, `stderr:\n${r.stderr}`);
+
+      // skip / ignore の existingFile / newFile は変更なし
+      assert.ok(existsSync(candidates[1].newFile), `skip の newFile は残存`);
+      assert.ok(existsSync(candidates[2].newFile), `ignore の newFile は残存`);
+
+      // manifest 確認
+      const backupRoot = join(dir, '.apply-plan-backup');
+      const subdirs = readdirSync(backupRoot);
+      const manifest = JSON.parse(readFileSync(join(backupRoot, subdirs[0], 'restore-manifest.json'), 'utf-8'));
+      assert.equal(manifest.candidates.length, 1, `merge のみ candidates に`);
+      assert.equal(manifest.skipped.length, 2, `skip + ignore で 2 件 skipped に`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T29 異常系: --execute で existingFile 不在 → exit 1', () => {
+    const { dir, planPath, candidates } = setupTmpLessonsAndPlan(['merge']);
+    try {
+      // existingFile を削除
+      rmSync(candidates[0].existingFile);
+      const r = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(r.status, 1, `existingFile 不在で exit 1 のはず`);
+      assert.ok(r.stderr.includes('existingFile not found') || r.stderr.includes('not found'), `stderr:\n${r.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T30 異常系: --rollback-plan ディレクトリ不在 → exit 1', () => {
+    const r = run(['--rollback-plan', '/nonexistent/path/to/backup/xyz', '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('rollback directory not found') || r.stderr.includes('not found'), `stderr:\n${r.stderr}`);
+  });
+
+  test('T31 異常系: --rollback-plan で manifest 不在 → exit 1', () => {
+    const dir = join(os_tmpdir(), `lsl-v245-t31-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const r = run(['--rollback-plan', dir, '--no-version-check']);
+      assert.equal(r.status, 1);
+      assert.ok(r.stderr.includes('restore-manifest.json not found') || r.stderr.includes('not found'), `stderr:\n${r.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T32 [critical R1] rollback 二重実行で exit 1', () => {
+    const { dir, planPath } = setupTmpLessonsAndPlan(['merge']);
+    try {
+      const execR = run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      assert.equal(execR.status, 0, `execute stderr:\n${execR.stderr}`);
+
+      const backupRoot = join(dir, '.apply-plan-backup');
+      const subdirs = readdirSync(backupRoot);
+      const backupDir = join(backupRoot, subdirs[0]);
+
+      // 1 回目 rollback
+      const rb1 = run(['--rollback-plan', backupDir, '--no-version-check'], { cwd: dir });
+      assert.equal(rb1.status, 0, `1 回目 rollback 成功はず`);
+
+      // 2 回目 rollback → exit 1
+      const rb2 = run(['--rollback-plan', backupDir, '--no-version-check'], { cwd: dir });
+      assert.equal(rb2.status, 1, `2 回目 rollback は exit 1`);
+      assert.ok(rb2.stderr.includes('既に rollback 済み') || rb2.stderr.includes('already'), `stderr:\n${rb2.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T33 rollback 後の manifest に rolled_back_at が記録される', () => {
+    const { dir, planPath } = setupTmpLessonsAndPlan(['merge']);
+    try {
+      run(['--apply-plan', planPath, '--execute', '--no-version-check'], { cwd: dir });
+      const backupRoot = join(dir, '.apply-plan-backup');
+      const backupDir = join(backupRoot, readdirSync(backupRoot)[0]);
+
+      // rollback 前は null
+      const manifestBefore = JSON.parse(readFileSync(join(backupDir, 'restore-manifest.json'), 'utf-8'));
+      assert.equal(manifestBefore.rolled_back_at, null);
+
+      run(['--rollback-plan', backupDir, '--no-version-check'], { cwd: dir });
+
+      // rollback 後は ISO 8601 文字列
+      const manifestAfter = JSON.parse(readFileSync(join(backupDir, 'restore-manifest.json'), 'utf-8'));
+      assert.ok(manifestAfter.rolled_back_at);
+      assert.match(manifestAfter.rolled_back_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('v2.4.5 Phase 2 Nit-1: T22 強化（lessons/*.md mtime 不変）', () => {
+  test('T22-v2 [critical Nit-1] dry-run (--apply-plan 単独) で lessons/*.md mtime が不変', async () => {
+    const { dir, planPath, candidates } = setupTmpLessonsAndPlan(['merge', 'skip']);
+    try {
+      const mtimesBefore = candidates.map(c => ({
+        existing: statSync(c.existingFile).mtimeMs,
+        new: statSync(c.newFile).mtimeMs,
+      }));
+
+      await new Promise(r => setTimeout(r, 20));
+
+      // dry-run (--execute なし)
+      const r = run(['--apply-plan', planPath, '--no-version-check']);
+      assert.equal(r.status, 0);
+
+      const mtimesAfter = candidates.map(c => ({
+        existing: statSync(c.existingFile).mtimeMs,
+        new: statSync(c.newFile).mtimeMs,
+      }));
+
+      for (let i = 0; i < candidates.length; i++) {
+        assert.equal(mtimesBefore[i].existing, mtimesAfter[i].existing, `lessons[${i}] existingFile mtime 不変`);
+        assert.equal(mtimesBefore[i].new, mtimesAfter[i].new, `lessons[${i}] newFile mtime 不変`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('v2.4.5 Phase 2 Nit-2: 同時指定エラー', () => {
+  test('T34a [critical Nit-2] --apply-plan + --sync → exit 1', () => {
+    const r = run(['--apply-plan', './foo.json', '--sync', '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('must be used alone'), `stderr:\n${r.stderr}`);
+  });
+
+  test('T34b --apply-plan + --health → exit 1', () => {
+    const r = run(['--apply-plan', './foo.json', '--health', '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('must be used alone'), `stderr:\n${r.stderr}`);
+  });
+
+  test('T34c --rollback-plan + --sync → exit 1', () => {
+    const r = run(['--rollback-plan', './foo-dir', '--sync', '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('must be used alone'), `stderr:\n${r.stderr}`);
+  });
+});
+
+describe('v2.4.5 Phase 2 Nit-3: candidates=[] 警告', () => {
+  test('T35a [critical Nit-3] dry-run で candidates=[] に警告メッセージ', () => {
+    const dir = join(os_tmpdir(), `lsl-v245-t35a-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const planPath = join(dir, 'empty-plan.json');
+      writeFileSync(planPath, JSON.stringify({
+        version: '2.4.3',
+        generated_at: new Date().toISOString(),
+        candidates: [],
+      }));
+      const r = run(['--apply-plan', planPath, '--no-version-check']);
+      assert.equal(r.status, 0);
+      assert.ok(r.stdout.includes('candidates が空') || r.stdout.includes('candidates'), `stdout:\n${r.stdout}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('T35b dry-run --json で candidates=[] に warning フィールド', () => {
+    const dir = join(os_tmpdir(), `lsl-v245-t35b-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const planPath = join(dir, 'empty-plan.json');
+      writeFileSync(planPath, JSON.stringify({
+        version: '2.4.3',
+        generated_at: new Date().toISOString(),
+        candidates: [],
+      }));
+      const r = run(['--apply-plan', planPath, '--json', '--no-version-check']);
+      assert.equal(r.status, 0);
+      const out = JSON.parse(r.stdout);
+      assert.ok(out.warning, `JSON out.warning フィールド存在`);
+      assert.ok(out.warning.includes('candidates が空'), `warning メッセージ`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('v2.4.5 Phase 2: --help に --rollback-plan / --execute 拡張', () => {
+  test('--help: --rollback-plan が含まれる', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--rollback-plan'), `--help に --rollback-plan が含まれていない:\n${stdout}`);
+  });
+
+  test('--help: --apply-plan --execute の説明が含まれる', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--apply-plan --execute') || stdout.includes('破壊操作'), `--help に --apply-plan --execute 説明なし:\n${stdout}`);
+  });
+});
+
