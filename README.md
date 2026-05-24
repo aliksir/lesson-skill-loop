@@ -147,7 +147,7 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
 
 `--apply-plan <path>` reads a `merge-plan.json` (written by `--merge-twice --execute`) and outputs a **dry-run summary** of how each candidate would be processed. Each `candidate.action` field (`merge` / `skip` / `ignore`) is counted and listed.
 
-**This is Phase 1**: validation and summary only. **No files are modified.** Actual merge logic is planned for **v2.4.5+ (Phase 2)**.
+**Phase 1 (this section)**: validation and summary only — **no files are modified**. Actual merge execution and rollback are implemented in **v2.4.5+ (Phase 2)** — see the next section.
 
 ```bash
 # 1) Generate merge-plan.json from candidates
@@ -179,7 +179,7 @@ Example output:
 📝 merge 対象 (1 件):
    1. lessons/recent.md ⇐ lessons/old.md (jaccard: 0.42)
 
-⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。
+⚠️  これは dry-run です。実マージは --execute で実行可能 (v2.4.5+)。
 ```
 
 **Validation rules**:

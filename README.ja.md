@@ -147,7 +147,7 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
 
 `--apply-plan <path>` は `--merge-twice --execute` が書き出した `merge-plan.json` を読み取り、各 candidate の処理予定を **dry-run でサマリ出力**します。`action` フィールド（`merge` / `skip` / `ignore`）を集計し、対象ファイルを一覧化します。
 
-**本リリースは Phase 1**: バリデーションとサマリ出力のみで、**ファイルは一切変更しません**。実際の統合処理は **v2.4.5+ (Phase 2)** で対応予定です。
+**Phase 1（本セクション）**: バリデーションとサマリ出力のみで、**ファイルは一切変更しません**。実際の統合処理とロールバックは **v2.4.5+ (Phase 2) で実装済み** — 次のセクション参照。
 
 ```bash
 # 1) --merge-twice --execute で merge-plan.json を生成
@@ -179,7 +179,7 @@ claude-skill-loop --apply-plan ./merge-plan.json --json
 📝 merge 対象 (1 件):
    1. lessons/recent.md ⇐ lessons/old.md (jaccard: 0.42)
 
-⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。
+⚠️  これは dry-run です。実マージは --execute で実行可能 (v2.4.5+)。
 ```
 
 **バリデーションルール**:
