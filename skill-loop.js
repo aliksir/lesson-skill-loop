@@ -11,6 +11,7 @@
 //   node skill-loop.js --map [lessons_dir]        # スキル⇔教訓トレーサビリティマップ
 //   node skill-loop.js --all [lessons_dir]        # 全部実行
 //   node skill-loop.js --merge-twice [lessons_dir]  # v2.4.0: 2度発火統合候補検出 (dry-run)
+//   node skill-loop.js --apply-plan <path>        # v2.4.4 Phase 1: merge-plan.json dry-run 解析（実マージなし）
 //   node skill-loop.js --for <project-dir>        # v2.3.0: プロジェクトスタック検出+教訓フィルタ
 //   node skill-loop.js --json [lessons_dir]       # JSON形式出力
 //   node skill-loop.js --self-update              # ツール自身を最新版に更新
@@ -36,6 +37,10 @@ let threshold = 3;
 let mergeTwiceDays = 30; // v2.4.0: --merge-twice の "新規" ウィンドウ
 let jaccardMin = null;   // v2.4.2: --jaccard-min CLI override (null = DEFAULT_MERGE_TWICE_JACCARD_MIN 使用)
 let executeMode = false; // v2.4.2: --execute で merge-plan.json 書き出し (--merge-twice 時のみ)
+let applyPlanPath = null; // v2.4.4 Phase 1: --apply-plan <path> で merge-plan.json を読込・検証・dry-run 出力
+
+// v2.4.4 Phase 1: --apply-plan の candidates[].action 許可値（実マージは Phase 2 持ち越し）
+const APPLY_PLAN_ACTIONS = ['merge', 'skip', 'ignore'];
 const selfUpdateMode = args.includes('--self-update');
 const noVersionCheck = args.includes('--no-version-check');
 
@@ -62,6 +67,10 @@ Options:
   --execute          v2.4.2+: --merge-twice 検出結果を merge-plan.json として CWD に書き出し
                      v2.4.3+: candidates=0 でも空配列で書き出し、--json と両立可（両方出力）
                      (実マージは未実装、merge-plan.json は手動レビュー or 別ツール用の中間出力)
+  --apply-plan <p>   v2.4.4 Phase 1: merge-plan.json (<p>) を読み込んで dry-run 解析 + サマリ出力。
+                     各 candidate の action ('merge' / 'skip' / 'ignore') を集計するのみで、
+                     実際の統合（lessons/*.md 変更）は行わない。'TBD' 残存はバリデーションエラー。
+                     実マージは Phase 2 (v2.4.5+) で対応予定。
   --for <path>       Filter lessons by stack detected in <path> (v2.3.0+).
                      Relative paths are resolved from the current working directory.
                      The target must be a directory (not a file).
@@ -198,6 +207,17 @@ for (let i = 0; i < args.length; i++) {
       // v2.4.2: --merge-twice 結果を merge-plan.json として書き出す (実マージは未実装)
       executeMode = true;
       break;
+    case '--apply-plan': {
+      // v2.4.4 Phase 1: merge-plan.json を読み込んで dry-run 解析
+      mode = 'apply-plan';
+      const p = args[++i];
+      if (!p || p.startsWith('--')) {
+        console.error('Error: --apply-plan requires a path (e.g., --apply-plan ./merge-plan.json)');
+        process.exit(1);
+      }
+      applyPlanPath = p;
+      break;
+    }
     case '--json':    jsonMode = true;  break;
     case '--dir':
       // args[++i] が配列末尾を超えた場合は undefined → '' にフォールバック（意図的）
@@ -1641,9 +1661,130 @@ function writeExecutePlan(candidates, tagOverlapMin, keywordJaccardMin, mergeTwi
     if (candidates.length === 0) {
       console.log(`   ※ candidates=0 のため空配列で書き出し（v2.4.3+ 一貫挙動）`);
     } else {
-      console.log(`   各候補の "action" フィールドを merge/skip/ignore で埋めて、実マージは v2.4.4+ (TBD) で対応予定`);
+      console.log(`   各候補の "action" フィールドを merge/skip/ignore で埋めて、--apply-plan で dry-run 解析 (v2.4.4+)、実マージは v2.4.5+ で対応予定`);
     }
   }
+}
+
+// --- モード6: v2.4.4 Phase 1 --apply-plan (dry-run のみ、実マージなし) ---
+
+// merge-plan.json のスキーマバリデーション。エラー一覧を文字列配列で返す（空なら PASS）
+function validatePlanSchema(plan) {
+  const errors = [];
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
+    errors.push('plan はオブジェクトであるべき');
+    return errors;
+  }
+  if (typeof plan.version !== 'string') errors.push('version 欠落 or 文字列でない');
+  if (typeof plan.generated_at !== 'string') errors.push('generated_at 欠落 or 文字列でない');
+  if (!Array.isArray(plan.candidates)) {
+    errors.push('candidates が配列でない');
+    return errors;
+  }
+  plan.candidates.forEach((c, i) => {
+    if (!c || typeof c !== 'object') {
+      errors.push(`candidates[${i}] がオブジェクトでない`);
+      return;
+    }
+    if (typeof c.newFile !== 'string') errors.push(`candidates[${i}].newFile 欠落 or 文字列でない`);
+    if (typeof c.existingFile !== 'string') errors.push(`candidates[${i}].existingFile 欠落 or 文字列でない`);
+    if (!APPLY_PLAN_ACTIONS.includes(c.action)) {
+      errors.push(`candidates[${i}].action = ${JSON.stringify(c.action)} は無効（許可値: ${APPLY_PLAN_ACTIONS.join(' / ')}）`);
+    }
+  });
+  return errors;
+}
+
+function doApplyPlan(planPath, jsonMode) {
+  // 1. ファイル読込
+  if (!existsSync(planPath)) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'merge-plan.json not found', path: planPath }, null, 2));
+    } else {
+      console.error(`✘ merge-plan.json not found: ${planPath}`);
+    }
+    process.exit(1);
+  }
+  let plan;
+  try {
+    plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+  } catch (e) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'Invalid JSON', message: e.message, path: planPath }, null, 2));
+    } else {
+      console.error(`✘ Invalid JSON in ${planPath}: ${e.message}`);
+    }
+    process.exit(1);
+  }
+
+  // 2. バリデーション
+  const errors = validatePlanSchema(plan);
+  if (errors.length > 0) {
+    if (jsonMode) {
+      console.log(JSON.stringify({ error: 'validation failed', errors, path: planPath }, null, 2));
+    } else {
+      console.error('✘ merge-plan.json バリデーションエラー:');
+      errors.forEach(e => console.error(`   - ${e}`));
+    }
+    process.exit(1);
+  }
+
+  // 3. 集計
+  const summary = { merge: 0, skip: 0, ignore: 0 };
+  for (const c of plan.candidates) {
+    summary[c.action]++;
+  }
+
+  // 4. 出力
+  if (jsonMode) {
+    const out = {
+      version: '2.4.4',
+      mode: 'apply-plan',
+      planPath,
+      planVersion: plan.version,
+      summary,
+      candidates: plan.candidates.map(c => ({
+        newFile: c.newFile,
+        existingFile: c.existingFile,
+        action: c.action,
+        jaccardScore: c.jaccardScore,
+      })),
+      dryRun: true,
+      note: '実マージは v2.4.5+ で対応予定',
+    };
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+
+  // 人間可読
+  console.log(`📋 merge-plan.json を読み込みました (${planPath})`);
+  console.log(`   version: ${plan.version}`);
+  console.log(`   generated_at: ${plan.generated_at}`);
+  console.log(`   totalCandidates: ${plan.candidates.length}`);
+  console.log('');
+  console.log('📊 サマリ:');
+  console.log(`   merge: ${summary.merge} 件`);
+  console.log(`   skip: ${summary.skip} 件`);
+  console.log(`   ignore: ${summary.ignore} 件`);
+  console.log('');
+
+  const groups = [
+    { key: 'merge', label: 'merge 対象', icon: '📝' },
+    { key: 'skip', label: 'skip 対象', icon: '⏸️ ' },
+    { key: 'ignore', label: 'ignore 対象', icon: '🚫' },
+  ];
+  for (const g of groups) {
+    const items = plan.candidates.filter(c => c.action === g.key);
+    if (items.length === 0) continue;
+    console.log(`${g.icon} ${g.label} (${items.length} 件):`);
+    items.forEach((c, i) => {
+      const j = (typeof c.jaccardScore === 'number') ? ` (jaccard: ${c.jaccardScore.toFixed(2)})` : '';
+      console.log(`   ${i + 1}. ${c.newFile} ⇐ ${c.existingFile}${j}`);
+    });
+    console.log('');
+  }
+
+  console.log('⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。');
 }
 
 // --- --all モード ---
@@ -1763,6 +1904,13 @@ async function main() {
   // --self-update: ツール自身を更新して終了
   if (selfUpdateMode) {
     await selfUpdate();
+    return;
+  }
+
+  // v2.4.4 Phase 1: --apply-plan は LESSONS_DIR と無関係（merge-plan.json 単体読込のみ）
+  // LESSON_FILES 空チェックと --for 検証の前で early return
+  if (mode === 'apply-plan') {
+    doApplyPlan(applyPlanPath, jsonMode);
     return;
   }
 

@@ -1,0 +1,17 @@
+{
+  "version": "2.4.3",
+  "generated_at": "2026-05-24T08:00:00.000Z",
+  "threshold": { "tagOverlapMin": 2, "keywordJaccardMin": 0.2 },
+  "days": 30,
+  "totalCandidates": 1,
+  "candidates": [
+    {
+      "newFile": "lessons/recent.md",
+      "existingFile": "lessons/old.md",
+      "sharedCategoryTags": ["api"],
+      "sharedKeywords": ["mock"],
+      "jaccardScore": 0.42,
+      "action": "TBD"
+    }
+  ]
+}
