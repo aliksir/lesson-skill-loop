@@ -1322,6 +1322,17 @@ describe('v2.4.3: --json --execute 両立 (F3)', () => {
     assert.ok(existsSync(planPath), `--json --execute 両指定で merge-plan.json が書き出されるべき (F3)\nstdout: ${r.stdout}`);
     const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
     assert.equal(plan.version, '2.4.3');
+    // v2.4.4 Phase 1 (Nit-1): stdout JSON の candidates.length と merge-plan.json の totalCandidates が一致
+    assert.equal(
+      stdoutJson.candidates.length,
+      plan.totalCandidates,
+      `stdoutJson.candidates.length (${stdoutJson.candidates.length}) と merge-plan.json totalCandidates (${plan.totalCandidates}) が不一致 — Nit-1`
+    );
+    assert.equal(
+      stdoutJson.candidates.length,
+      plan.candidates.length,
+      `stdoutJson.candidates.length と plan.candidates.length も一致するべき — Nit-1`
+    );
   });
 
   test('--json 単独: merge-plan.json は書き出されない (回帰)', () => {
@@ -1350,6 +1361,145 @@ describe('v2.4.2: --help に新フラグ', () => {
   test('--help: --execute が含まれる', () => {
     const { stdout } = run(['--help']);
     assert.ok(stdout.includes('--execute'), `--help に --execute が含まれていない:\n${stdout}`);
+  });
+});
+
+// =============================================================================
+// v2.4.4 Phase 1 (Nit-2): --json --execute --jaccard-min 0.99 3フラグ組み合わせ
+// =============================================================================
+
+describe('v2.4.4 Phase 1 (Nit-2): --json --execute --jaccard-min 0.99 3フラグ組み合わせ', () => {
+  test('3フラグ同時指定: candidates=0 で stdout JSON + merge-plan.json 両方が空配列で書出', async () => {
+    const { readFileSync } = await import('node:fs');
+    const dir = makeMergePair();
+    const cwd = makeTempLessons({});
+    const r = run(
+      ['--merge-twice', '--json', '--execute', '--jaccard-min', '0.99', '--no-version-check'],
+      { cwd, env: { LESSON_SKILL_LESSONS_DIR: dir } }
+    );
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // stdout JSON が candidates=[] (高閾値)
+    const stdoutJson = JSON.parse(r.stdout);
+    assert.equal(stdoutJson.mode, 'merge-twice');
+    assert.ok(Array.isArray(stdoutJson.candidates));
+    assert.equal(stdoutJson.candidates.length, 0, `--jaccard-min 0.99 で候補ゼロのはず`);
+    // merge-plan.json も書き出され、空配列
+    const planPath = join(cwd, 'merge-plan.json');
+    assert.ok(existsSync(planPath), `--json --execute --jaccard-min 0.99 で merge-plan.json が書き出されるべき`);
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+    assert.equal(plan.candidates.length, 0, `plan.candidates が空配列のはず`);
+    assert.equal(plan.totalCandidates, 0);
+    // Nit-1 相当: stdout と file の長さ一致
+    assert.equal(stdoutJson.candidates.length, plan.totalCandidates);
+  });
+});
+
+// =============================================================================
+// v2.4.4 Phase 1: --apply-plan dry-run（実マージなし）
+// =============================================================================
+
+describe('v2.4.4 Phase 1: --apply-plan dry-run', () => {
+  const FIXTURES_DIR = join(__dirname, 'fixtures');
+  const FIXTURE_ALL_MERGE = join(FIXTURES_DIR, 'sample-plan-all-merge.json');
+  const FIXTURE_MIXED = join(FIXTURES_DIR, 'sample-plan-mixed.json');
+  const FIXTURE_TBD = join(FIXTURES_DIR, 'sample-plan-tbd-residual.json');
+
+  test('T16 正常系: --apply-plan all-merge fixture で merge 件数集計', () => {
+    const r = run(['--apply-plan', FIXTURE_ALL_MERGE, '--no-version-check']);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes('merge: 2'), `stdout に "merge: 2" が含まれない:\n${r.stdout}`);
+    assert.ok(r.stdout.includes('skip: 0'), `stdout に "skip: 0" が含まれない`);
+    assert.ok(r.stdout.includes('ignore: 0'), `stdout に "ignore: 0" が含まれない`);
+    assert.ok(r.stdout.includes('dry-run'), `stdout に "dry-run" 注記が含まれない`);
+  });
+
+  test('T17 正常系: --apply-plan mixed fixture で各 action 件数集計', () => {
+    const r = run(['--apply-plan', FIXTURE_MIXED, '--no-version-check']);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes('merge: 1'));
+    assert.ok(r.stdout.includes('skip: 1'));
+    assert.ok(r.stdout.includes('ignore: 1'));
+  });
+
+  test('T18 異常系: --apply-plan TBD 残存で exit 1', () => {
+    const r = run(['--apply-plan', FIXTURE_TBD, '--no-version-check']);
+    assert.equal(r.status, 1, `TBD 残存で exit 1 のはず: stdout=${r.stdout}, stderr=${r.stderr}`);
+    assert.ok(r.stderr.includes('TBD'), `stderr に 'TBD' エラーが含まれるはず:\n${r.stderr}`);
+  });
+
+  test('T19 異常系: --apply-plan ファイル不在で exit 1', () => {
+    const r = run(['--apply-plan', '/nonexistent-merge-plan.json', '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('not found'), `stderr に 'not found' が含まれるはず:\n${r.stderr}`);
+  });
+
+  test('T20 異常系: --apply-plan 不正 action 値で exit 1', () => {
+    const dir = makeTempLessons({
+      'bad-plan.json': JSON.stringify({
+        version: '2.4.3',
+        generated_at: '2026-05-24T00:00:00.000Z',
+        candidates: [
+          { newFile: 'a.md', existingFile: 'b.md', action: 'delete' }
+        ],
+      }),
+    });
+    const r = run(['--apply-plan', join(dir, 'bad-plan.json'), '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('delete'), `stderr に不正値 'delete' エラーが含まれるはず:\n${r.stderr}`);
+  });
+
+  test('T21 --apply-plan --json: 構造化 JSON 出力', () => {
+    const r = run(['--apply-plan', FIXTURE_MIXED, '--json', '--no-version-check']);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.mode, 'apply-plan');
+    assert.equal(out.dryRun, true);
+    assert.equal(out.summary.merge, 1);
+    assert.equal(out.summary.skip, 1);
+    assert.equal(out.summary.ignore, 1);
+    assert.ok(Array.isArray(out.candidates));
+    assert.equal(out.candidates.length, 3);
+  });
+
+  test('T22 [critical] --apply-plan で実マージが行われない（fixture mtime 不変）', async () => {
+    const { statSync } = await import('node:fs');
+    const before = statSync(FIXTURE_MIXED).mtimeMs;
+    // 1ms 遅延で確実に検出可能に
+    await new Promise(r => setTimeout(r, 5));
+    const r = run(['--apply-plan', FIXTURE_MIXED, '--no-version-check']);
+    assert.equal(r.status, 0);
+    const after = statSync(FIXTURE_MIXED).mtimeMs;
+    assert.equal(before, after, `fixture ファイルが mtime 変化 → 実マージが発生した可能性！ Phase 1 では発生してはならない`);
+  });
+
+  test('T23 異常系: --apply-plan 引数なしで exit 1', () => {
+    const r = run(['--apply-plan', '--no-version-check']);
+    assert.equal(r.status, 1, `引数なしで exit 1 のはず`);
+    assert.ok(r.stderr.includes('--apply-plan'), `stderr に --apply-plan エラーが含まれるはず:\n${r.stderr}`);
+  });
+
+  test('T24 異常系: --apply-plan で不正 JSON は exit 1', () => {
+    const dir = makeTempLessons({ 'broken.json': '{ broken: json' });
+    const r = run(['--apply-plan', join(dir, 'broken.json'), '--no-version-check']);
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('Invalid JSON'), `stderr に 'Invalid JSON' が含まれるはず:\n${r.stderr}`);
+  });
+});
+
+// =============================================================================
+// v2.4.4 Phase 1: --help に --apply-plan 表示
+// =============================================================================
+
+describe('v2.4.4 Phase 1: --help に --apply-plan', () => {
+  test('--help: --apply-plan が含まれる', () => {
+    const { stdout } = run(['--help']);
+    assert.ok(stdout.includes('--apply-plan'), `--help に --apply-plan が含まれていない:\n${stdout}`);
+  });
+
+  test('--help: --apply-plan の説明に "dry-run" 注記が含まれる', () => {
+    const { stdout } = run(['--help']);
+    // 「dry-run 解析」または同等の説明
+    assert.ok(stdout.includes('dry-run'), `--help の --apply-plan 説明に 'dry-run' 注記が含まれていない:\n${stdout}`);
   });
 });
 

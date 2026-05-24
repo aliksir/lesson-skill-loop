@@ -143,6 +143,52 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
 - `--execute` モード（実統合）は v2.4.2 で対応予定
 - `--merge-twice` と `--for <project>` は**独立**しており、併用時 `--for` フィルタは他モード（`--analyze` / `--sync` / `--health` / `--map`）には適用されますが、`--merge-twice` のペア検出には**適用されません**。`--merge-twice` は常に `LESSON_FILES` 全体をスキャンします。
 
+## merge-plan.json の dry-run 解析（`--apply-plan`、v2.4.4+ Phase 1）
+
+`--apply-plan <path>` は `--merge-twice --execute` が書き出した `merge-plan.json` を読み取り、各 candidate の処理予定を **dry-run でサマリ出力**します。`action` フィールド（`merge` / `skip` / `ignore`）を集計し、対象ファイルを一覧化します。
+
+**本リリースは Phase 1**: バリデーションとサマリ出力のみで、**ファイルは一切変更しません**。実際の統合処理は **v2.4.5+ (Phase 2)** で対応予定です。
+
+```bash
+# 1) --merge-twice --execute で merge-plan.json を生成
+claude-skill-loop --merge-twice --execute --no-version-check
+
+# 2) merge-plan.json を手動編集（各 candidate の "action": "TBD" を merge/skip/ignore に変更）
+$EDITOR merge-plan.json
+
+# 3) plan を dry-run 解析
+claude-skill-loop --apply-plan ./merge-plan.json
+
+# JSON 出力（CI 連携用）
+claude-skill-loop --apply-plan ./merge-plan.json --json
+```
+
+出力例:
+
+```
+📋 merge-plan.json を読み込みました (./merge-plan.json)
+   version: 2.4.3
+   generated_at: 2026-05-24T08:00:00.000Z
+   totalCandidates: 3
+
+📊 サマリ:
+   merge: 1 件
+   skip: 1 件
+   ignore: 1 件
+
+📝 merge 対象 (1 件):
+   1. lessons/recent.md ⇐ lessons/old.md (jaccard: 0.42)
+
+⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。
+```
+
+**バリデーションルール**:
+- `candidates[].action` は `merge` / `skip` / `ignore` のいずれかのみ許可。**`TBD` 残存は exit 1** で拒否（手動レビュー必須を強制）
+- 必須フィールド（`version` / `candidates` / `newFile` / `existingFile` / `action`）欠落 → exit 1
+- 不正 JSON / ファイル不在 → exit 1
+
+**なぜ段階導入か**: 実マージはファイル append / 削除 / git commit という破壊操作を含むため、Phase 1 で JSON スキーマとバリデーションを確定させ、Phase 2 で実マージロジックを安全に積み上げます。
+
 ## 教訓ファイルの書き方
 
 タグ付きの見出しを持つMarkdownファイル：

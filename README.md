@@ -143,6 +143,52 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
 - `--execute` mode for actual file merge: planned for v2.4.2.
 - `--merge-twice` and `--for <project>` are **independent**: when used together, `--for` filtering applies to the other modes (`--analyze` / `--sync` / `--health` / `--map`) but **not** to `--merge-twice`'s pair detection. `--merge-twice` always scans the full `LESSON_FILES` set, regardless of `--for`.
 
+## Apply merge-plan.json (`--apply-plan`, v2.4.4+, Phase 1)
+
+`--apply-plan <path>` reads a `merge-plan.json` (written by `--merge-twice --execute`) and outputs a **dry-run summary** of how each candidate would be processed. Each `candidate.action` field (`merge` / `skip` / `ignore`) is counted and listed.
+
+**This is Phase 1**: validation and summary only. **No files are modified.** Actual merge logic is planned for **v2.4.5+ (Phase 2)**.
+
+```bash
+# 1) Generate merge-plan.json from candidates
+claude-skill-loop --merge-twice --execute --no-version-check
+
+# 2) Edit each candidate's "action" field manually (TBD → merge / skip / ignore)
+$EDITOR merge-plan.json
+
+# 3) Dry-run the plan to see what would happen
+claude-skill-loop --apply-plan ./merge-plan.json
+
+# JSON output for CI
+claude-skill-loop --apply-plan ./merge-plan.json --json
+```
+
+Example output:
+
+```
+📋 merge-plan.json を読み込みました (./merge-plan.json)
+   version: 2.4.3
+   generated_at: 2026-05-24T08:00:00.000Z
+   totalCandidates: 3
+
+📊 サマリ:
+   merge: 1 件
+   skip: 1 件
+   ignore: 1 件
+
+📝 merge 対象 (1 件):
+   1. lessons/recent.md ⇐ lessons/old.md (jaccard: 0.42)
+
+⚠️  これは dry-run です。実マージは v2.4.5+ で対応予定（Phase 2）。
+```
+
+**Validation rules**:
+- `candidates[].action` must be one of `merge` / `skip` / `ignore`. **`TBD` is rejected** (forces manual review).
+- Missing required fields (`version`, `candidates`, `newFile`, `existingFile`, `action`) → exit code 1.
+- Malformed JSON or missing file → exit code 1.
+
+**Why phased**: actual merge involves destructive file operations (append / delete / git commit). Phase 1 locks the JSON schema and validation so Phase 2 can safely build on top without re-architecting.
+
 ## Lesson File Format
 
 Lessons are markdown files with tagged headings:

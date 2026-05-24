@@ -1,0 +1,33 @@
+{
+  "version": "2.4.3",
+  "generated_at": "2026-05-24T08:00:00.000Z",
+  "threshold": { "tagOverlapMin": 2, "keywordJaccardMin": 0.2 },
+  "days": 30,
+  "totalCandidates": 3,
+  "candidates": [
+    {
+      "newFile": "lessons/recent.md",
+      "existingFile": "lessons/old.md",
+      "sharedCategoryTags": ["api"],
+      "sharedKeywords": ["mock"],
+      "jaccardScore": 0.42,
+      "action": "merge"
+    },
+    {
+      "newFile": "lessons/another.md",
+      "existingFile": "lessons/existing.md",
+      "sharedCategoryTags": ["cli"],
+      "sharedKeywords": [],
+      "jaccardScore": 0.15,
+      "action": "skip"
+    },
+    {
+      "newFile": "lessons/yet-another.md",
+      "existingFile": "lessons/legacy.md",
+      "sharedCategoryTags": ["legacy"],
+      "sharedKeywords": ["deprecated"],
+      "jaccardScore": 0.31,
+      "action": "ignore"
+    }
+  ]
+}
