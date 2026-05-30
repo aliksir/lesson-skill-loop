@@ -9,7 +9,7 @@ import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
@@ -1670,6 +1670,16 @@ describe('v2.4.5 Phase 2: --apply-plan --execute (実マージ)', () => {
       const manifest = JSON.parse(readFileSync(join(backupRoot, subdirs[0], 'restore-manifest.json'), 'utf-8'));
       assert.equal(manifest.candidates.length, 1, `merge のみ candidates に`);
       assert.equal(manifest.skipped.length, 2, `skip + ignore で 2 件 skipped に`);
+
+      // Nit-C: skip/ignore は merge 対象外 → existingFile の mtime は不変であること
+      assert.equal(statSync(candidates[1].existingFile).mtimeMs, skipFileBefore, `skip の existingFile mtime 不変`);
+      assert.equal(statSync(candidates[2].existingFile).mtimeMs, ignoreFileBefore, `ignore の existingFile mtime 不変`);
+
+      // Nit-D: manifest.skipped の path は絶対パスで記録される（監査ログのパス一貫性）
+      for (const s of manifest.skipped) {
+        assert.ok(isAbsolute(s.newFile), `skipped.newFile は絶対パス: ${s.newFile}`);
+        assert.ok(isAbsolute(s.existingFile), `skipped.existingFile は絶対パス: ${s.existingFile}`);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

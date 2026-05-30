@@ -1955,7 +1955,8 @@ function doApplyPlanExecute(plan, planPath, jsonMode) {
       });
     } else {
       // skip / ignore はログのみ
-      manifest.skipped.push({ newFile: c.newFile, existingFile: c.existingFile, action: c.action });
+      // Nit-D: skip/ignore の path も resolve して manifest.skipped に絶対パスで保存（merge は上で resolve 済み、監査ログのパス一貫性のため）
+      manifest.skipped.push({ newFile: resolve(c.newFile), existingFile: resolve(c.existingFile), action: c.action });
     }
   }
 
@@ -2071,6 +2072,8 @@ function doRollbackPlan(rollbackDir, jsonMode) {
       process.exit(1);
     }
     const backupContent = readFileSync(backupPath, 'utf-8');
+    // Nit-B: 親ディレクトリがユーザー手動削除等で不在の場合に備えて復元前に作成（recursive は冪等）
+    mkdirSync(dirname(c.existingFile), { recursive: true });
     writeFileSync(c.existingFile, backupContent);
 
     // newFile を moved から復元
@@ -2084,6 +2087,8 @@ function doRollbackPlan(rollbackDir, jsonMode) {
       process.exit(1);
     }
     const movedContent = readFileSync(movedPath, 'utf-8');
+    // Nit-B: newFile の親ディレクトリ不在ケースに備えて復元前に作成（recursive は冪等）
+    mkdirSync(dirname(c.newFile), { recursive: true });
     writeFileSync(c.newFile, movedContent);
   }
 

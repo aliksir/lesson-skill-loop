@@ -134,13 +134,11 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
    閾値: 主タグ一致 >= 1 AND キーワード Jaccard >= 0.2
 ```
 
-**dry-run のみ**: 本リリースは候補浮上のみでファイルは一切変更しません。出力を見て手動で統合判断してください。`--execute` モード（実統合）は v2.4.2 で対応予定。
+**dry-run のみ**: 本リリースは候補浮上のみでファイルは一切変更しません。出力を見て手動で統合判断してください。`--execute` モード（実統合）は **v2.4.5 で実装済み**（下記 Phase 2 セクション参照）。
 
 **v2.4.1 での改善**（本リリース）: キーワード抽出が **連続カタカナスパン**（2 文字以上）も拾うようになり、日本語短文 lesson ペアでも Jaccard 0.20 閾値に到達しやすくなりました。**shared category tags** も Jaccard の分子・分母に算入されます（`tag:` prefix で keywords との衝突を回避）。
 
 **既知の限界（継続）**:
-- `--jaccard-min` CLI フラグでの per-run 閾値調整は v2.4.2 で対応予定
-- `--execute` モード（実統合）は v2.4.2 で対応予定
 - `--merge-twice` と `--for <project>` は**独立**しており、併用時 `--for` フィルタは他モード（`--analyze` / `--sync` / `--health` / `--map`）には適用されますが、`--merge-twice` のペア検出には**適用されません**。`--merge-twice` は常に `LESSON_FILES` 全体をスキャンします。
 
 ## merge-plan.json の dry-run 解析（`--apply-plan`、v2.4.4+ Phase 1）

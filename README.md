@@ -134,13 +134,11 @@ claude-skill-loop --merge-twice --json ~/.claude/lessons
    閾値: 主タグ一致 >= 1 AND キーワード Jaccard >= 0.2
 ```
 
-**Dry-run only**: This release surfaces candidates but does not modify any files. Use the output to decide which lessons to merge manually. `--execute` mode is planned for v2.4.2.
+**Dry-run only**: This release surfaces candidates but does not modify any files. Use the output to decide which lessons to merge manually. `--execute` mode for real merge is **available since v2.4.5** (see the Phase 2 section below).
 
 **v2.4.1 improvements** (current release): keyword extraction now also picks up contiguous **katakana spans** (2+ chars), so Japanese short-text lesson pairs reach the 0.20 threshold more reliably. **Shared category tags** are also included in the Jaccard numerator and denominator (with a `tag:` prefix to avoid keyword collisions).
 
 **Known limitations (still open)**:
-- `--jaccard-min` CLI flag for tuning the threshold per run: planned for v2.4.2.
-- `--execute` mode for actual file merge: planned for v2.4.2.
 - `--merge-twice` and `--for <project>` are **independent**: when used together, `--for` filtering applies to the other modes (`--analyze` / `--sync` / `--health` / `--map`) but **not** to `--merge-twice`'s pair detection. `--merge-twice` always scans the full `LESSON_FILES` set, regardless of `--for`.
 
 ## Apply merge-plan.json (`--apply-plan`, v2.4.4+, Phase 1)
