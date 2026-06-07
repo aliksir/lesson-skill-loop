@@ -394,6 +394,10 @@ Claude Coworkセッションで以下を入力:
 | 閾値カスタマイズ | ✅ `--threshold N` | ❌（3固定） |
 | 速度 | 高速（Node.jsネイティブ） | やや遅い（Claudeがファイルを1つずつ読む） |
 
+## 動作要件
+
+- Node.js 18+
+
 ## 参考
 
 - [EvoSkill](https://arxiv.org/abs/2603.02766) — マルチエージェントシステムの自動スキル発見

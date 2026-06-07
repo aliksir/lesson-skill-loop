@@ -415,6 +415,10 @@ claude-skill-loop --all
 
 All flags (`--sync`, `--health`, `--map`, `--all`) work the same way. The Node.js version adds `--json`, `--threshold`, `--dir`, `--skills-dir`, and `--self-update`.
 
+## Requirements
+
+- Node.js 18+
+
 ## Inspired By
 
 - [EvoSkill](https://arxiv.org/abs/2603.02766) — Automated skill discovery for multi-agent systems
